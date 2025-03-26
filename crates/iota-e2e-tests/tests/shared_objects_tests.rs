@@ -18,14 +18,16 @@ use iota_test_transaction_builder::{
     TestTransactionBuilder, publish_basics_package, publish_basics_package_and_make_counter,
 };
 use iota_types::{
-    effects::TransactionEffectsAPI,
+    base_types::{IotaAddress, ObjectID, ObjectRef},
+    digests::TransactionDigest,
+    effects::{TransactionEffects, TransactionEffectsAPI},
     event::Event,
     execution_status::ExecutionStatus,
     messages_grpc::{LayoutGenerationOption, ObjectInfoRequest},
     transaction::{CallArg, ObjectArg},
 };
 use rand::distributions::Distribution;
-use test_cluster::TestClusterBuilder;
+use test_cluster::{TestCluster, TestClusterBuilder};
 use tokio::time::sleep;
 
 /// Send a simple shared object transaction to IOTA and ensures the client gets
@@ -676,4 +678,194 @@ async fn replay_shared_object_transaction() {
 
         version = Some(curr);
     }
+}
+
+// This test illustrates that there will be shared object congestion even if the
+// shared object is only read in a Move call by all transactions, but it is
+// wrongly referred, i.e., by a mutable reference, while building a transaction,
+// which creates unnecessary "artificial" shared object congestion. This happens
+// because it is allowed to pass a mutably referred shared object arg to a Move
+// call taking an immutable reference.
+#[sim_test]
+async fn cancellation_of_transactions_reading_shared_object() {
+    // Auxiliary function to send a number of transactions, each with a single
+    // `package_id::module::function` Move call
+    async fn send_counter_txs(
+        test_cluster: &TestCluster,
+        sender: IotaAddress,
+        package_id: ObjectID,
+        module: &'static str,
+        function: &'static str,
+        counter_object_arg: ObjectArg,
+        gas_objects: Vec<ObjectRef>,
+        rgp: u64,
+    ) -> Vec<TransactionDigest> {
+        let mut txs = vec![];
+
+        // Build and sign transactions
+        for gas_coin_ref in gas_objects {
+            let transaction = TestTransactionBuilder::new(sender, gas_coin_ref, rgp)
+                .move_call(
+                    package_id,
+                    module,
+                    function,
+                    vec![CallArg::Object(counter_object_arg)],
+                )
+                .build();
+
+            let signed = test_cluster.sign_transaction(&transaction);
+            let client_ip = SocketAddr::new([127, 0, 0, 1].into(), 0);
+            test_cluster
+                .create_certificate(signed.clone(), Some(client_ip))
+                .await
+                .unwrap();
+
+            txs.push(signed);
+        }
+
+        // Submit all transactions to the validators
+        let validators = test_cluster.get_validator_pubkeys();
+        let submissions = txs.iter().map(|tx| async {
+            test_cluster
+                .submit_transaction_to_validators(tx.clone(), &validators)
+                .await
+                .unwrap();
+            *tx.digest()
+        });
+
+        // Return digests of submitted transactions
+        join_all(submissions).await
+    }
+
+    // number of transactions to sent at a time, all touching the same shared object
+    let num_txs = 250;
+
+    let mut test_cluster = TestClusterBuilder::new()
+        .with_accounts(vec![AccountConfig {
+            address: None,
+            gas_amounts: vec![DEFAULT_GAS_AMOUNT; num_txs],
+        }])
+        .build()
+        .await;
+
+    let (package, counter) = publish_basics_package_and_make_counter(&test_cluster.wallet).await;
+    let package_id = package.0;
+    let module = "counter";
+    let function = "value";
+
+    let counter_id = counter.0;
+    let counter_initial_shared_version = counter.1;
+    let counter_object_arg_mut = ObjectArg::SharedObject {
+        id: counter_id,
+        initial_shared_version: counter_initial_shared_version,
+        mutable: true,
+    };
+    let counter_object_arg_imm = ObjectArg::SharedObject {
+        id: counter_id,
+        initial_shared_version: counter_initial_shared_version,
+        mutable: false,
+    };
+
+    let rgp = test_cluster.get_reference_gas_price().await;
+
+    // Get `num_txs` gas coins
+    let (sender, gas_objects) = test_cluster
+        .wallet
+        .get_all_accounts_and_gas_objects()
+        .await
+        .unwrap()
+        .pop()
+        .unwrap();
+    assert_eq!(gas_objects.len(), num_txs);
+
+    // Send shared-object transactions, each touching the same shared object
+    // referred to via an **immutable reference** in a Move call that takes an
+    // immutable reference
+    let digests = send_counter_txs(
+        &test_cluster,
+        sender,
+        package_id,
+        module,
+        function,
+        counter_object_arg_imm,
+        gas_objects,
+        rgp,
+    )
+    .await;
+
+    // Start a new fullnode.
+    let fullnode = test_cluster.spawn_new_fullnode().await.iota_node;
+
+    // Get all transactions effects by tx digests.
+    assert!(
+        fullnode
+            .state()
+            .get_transaction_cache_reader()
+            .notify_read_executed_effects(&digests)
+            .await
+            .unwrap()
+            .into_iter()
+            // All transactions reading a shared object via an immutable reference must be
+            // successfully executed, no cancellations due to congestion should occur
+            .all(|effect| {
+                let TransactionEffects::V1(v1) = effect;
+                matches!(v1.status(), ExecutionStatus::Success)
+            })
+    );
+
+    // Get `num_txs` gas coins
+    let (sender, gas_objects) = test_cluster
+        .wallet
+        .get_all_accounts_and_gas_objects()
+        .await
+        .unwrap()
+        .pop()
+        .unwrap();
+    assert_eq!(gas_objects.len(), num_txs);
+
+    // Send shared-object transactions, each touching the same shared object
+    // referred to via a **mutable reference** in a Move call that takes an
+    // immutable reference
+    let digests = send_counter_txs(
+        &test_cluster,
+        sender,
+        package_id,
+        module,
+        function,
+        counter_object_arg_mut,
+        gas_objects,
+        rgp,
+    )
+    .await;
+
+    // Get all transactions effects by tx digests
+    let effects = fullnode
+        .state()
+        .get_transaction_cache_reader()
+        .notify_read_executed_effects(&digests)
+        .await
+        .unwrap();
+    assert!(
+        effects
+            .iter()
+            // Now there should be some cancelled transactions due to congestion, even though
+            // the object is still read but wrongly referred by a mutable reference, which creates
+            // unnecessary "artificial" shared object congestion
+            .any(|effect| {
+                let TransactionEffects::V1(v1) = effect;
+                if let ExecutionStatus::Failure { error, .. } = v1.status() {
+                    matches!(
+                        error,
+                        ExecutionFailureStatus::ExecutionCancelledDueToSharedObjectCongestion { .. }
+                    )
+                } else {
+                    false
+                }
+            })
+    );
+    // This will panic
+    assert!(effects.into_iter().all(|effect| {
+        let TransactionEffects::V1(v1) = effect;
+        matches!(v1.status(), ExecutionStatus::Success)
+    }));
 }
