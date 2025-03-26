@@ -22,7 +22,8 @@ use iota_types::{
     digests::TransactionDigest,
     effects::{TransactionEffects, TransactionEffectsAPI},
     event::Event,
-    execution_status::ExecutionStatus,
+    execution_status::{CommandArgumentError, ExecutionFailureStatus, ExecutionStatus},
+    gas_coin::NANOS_PER_IOTA,
     messages_grpc::{LayoutGenerationOption, ObjectInfoRequest},
     transaction::{CallArg, ObjectArg},
 };
@@ -743,7 +744,7 @@ async fn cancellation_of_transactions_reading_shared_object() {
     let mut test_cluster = TestClusterBuilder::new()
         .with_accounts(vec![AccountConfig {
             address: None,
-            gas_amounts: vec![DEFAULT_GAS_AMOUNT; num_txs],
+            gas_amounts: vec![10_000 * NANOS_PER_IOTA; num_txs],
         }])
         .build()
         .await;
