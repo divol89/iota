@@ -2361,10 +2361,7 @@ impl ProtocolConfig {
                     // Enable validator score calculation on all networks.
                     cfg.feature_flags.calculate_validator_scores = true;
                     cfg.scorer_version = Some(1);
-                    // Enable adjustment of validator rewards based on score in devnet.
-                    if chain != Chain::Testnet && chain != Chain::Mainnet {
-                        cfg.feature_flags.adjust_rewards_by_score = true;
-                    }
+                    cfg.feature_flags.consensus_choice = ConsensusChoice::Mysticeti;
                 }
                 // Use this template when making changes:
                 //
