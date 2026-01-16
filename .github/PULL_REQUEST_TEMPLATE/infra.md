@@ -33,3 +33,7 @@ Make sure to provide instructions for the maintainer as well as any relevant con
 - [ ] CLI:
 - [ ] Rust SDK:
 - [ ] REST API:
+
+#### Attention
+
+- [ ] Protocol Types Changed

@@ -23,3 +23,7 @@ Be sure to reference any related issues by adding `fixes #(issue)`.
 - [ ] CLI:
 - [ ] Rust SDK:
 - [ ] REST API:
+
+#### Attention
+
+- [ ] Protocol Types Changed
