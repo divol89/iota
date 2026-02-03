@@ -50,7 +50,7 @@ RE_BREAKING_CRATE = re.compile(
 RE_BREAKING_NOTE = re.compile(
     r"^\s*-\s*\[( |x)?\]\s*(devnet|testnet|mainnet):\s*(.*)$",
     re.MULTILINE | re.IGNORECASE,
-)
+) 
 
 ROLLOUT_NETWORKS = ("devnet", "testnet", "mainnet")
 
@@ -82,8 +82,6 @@ NOTE_ORDER = [
     "REST API",
     "Internal gRPC API",
 ]
-
-BREAKING_ICON = "🚨"
 
 
 class Note(NamedTuple):
@@ -154,17 +152,17 @@ def parse_args():
         help="The commit to end at (inclusive), defaults to HEAD.",
     )
 
-    print_p = sub_parser.add_parser(
-        "print",
-        description="Generate and print release notes from git commits (alias of generate).",
+    test_p = sub_parser.add_parser(
+        "test",
+        description="Test generating release notes from git commits.",
     )
 
-    print_p.add_argument(
+    test_p.add_argument(
         "from",
         help="The commit to start from (exclusive)",
     )
 
-    print_p.add_argument(
+    test_p.add_argument(
         "to",
         nargs="?",
         default="HEAD",
@@ -224,22 +222,6 @@ def extract_notes_from_commit(commit):
         pr_notes = data[0]["body"] if data[0]["body"] else ""
         return pr_number, pr_notes
 
-def extract_notes_from_commit_no_pr(commit):
-    # we'll need to go one level deeper to find the PR number
-    url = f"https://api.github.com/repos/iotaledger/iota/commits/{commit}"
-    headers = {
-        "Accept": "application/vnd.github.v3+json",
-    }
-    if GH_TOKEN is not None:
-        headers["Authorization"] = f"token {GH_TOKEN}"
-    req = urllib.request.Request(url, headers=headers)
-    with urllib.request.urlopen(req) as response:
-        data = json.load(response)
-        if len(data) == 0:
-            return None, ""
-        pr_notes = data["commit"]["message"] if data["commit"]["message"] else ""
-        return pr_notes
-
 def extract_notes_from_pr(pr_number):
     url = f"https://api.github.com/repos/iotaledger/iota/pulls/{pr_number}"
     headers = {
@@ -253,6 +235,9 @@ def extract_notes_from_pr(pr_number):
         pr_notes = data["body"] if data["body"] else ""
         return pr_notes
 
+def extract_notes_from_local_commit(commit):
+    message = git("show", "-s", "--format=%B", commit)
+    return message
 
 def extract_rollout(notes, crate_names):
     """Extract rollout entries under the Breaking Changes Rollout section."""
@@ -321,7 +306,7 @@ def extract_rollout(notes, crate_names):
     return rollout
 
 
-def extract_notes(commit_or_pr, seen, is_pr, crate_names):
+def extract_notes(commit_or_pr, seen, is_pr, crate_names, is_test):
     """Get release notes from a commit message or a PR description.
 
     Finds the 'Release notes' section in the message, and
@@ -337,6 +322,9 @@ def extract_notes(commit_or_pr, seen, is_pr, crate_names):
     if is_pr:
         pr = commit_or_pr
         notes = extract_notes_from_pr(pr)
+    elif is_test:
+        pr = None
+        notes = extract_notes_from_local_commit(commit_or_pr)
     else:
         # Try to get the PR number from the commit message or fallback to the
         # one returned from the Github API
@@ -345,13 +333,7 @@ def extract_notes(commit_or_pr, seen, is_pr, crate_names):
             pr = match.group(1)
             notes = extract_notes_from_pr(pr)
         else:
-            # TODO re-enable
-            # pr, notes = extract_notes_from_commit(commit_or_pr)
-
-            # print(f"extracting notes from commit: {commit_or_pr}")
-            pr = 0
-            notes = extract_notes_from_commit_no_pr(commit_or_pr)
-            # print(notes)
+            pr, notes = extract_notes_from_commit(commit_or_pr)
 
     result = {}
     rollout = extract_rollout(notes, crate_names)
@@ -495,7 +477,7 @@ def do_check(commit_or_pr, is_pr):
     sys.exit(1)
 
 
-def do_generate(from_, to):
+def do_generate(from_, to, is_test):
     """Generate release notes from git commits.
 
     This will extract the release notes from all commits between
@@ -533,7 +515,7 @@ def do_generate(from_, to):
     seen_prs = set()
     for commit in commits.split("\n"):
         try:
-            pr, notes, rollout = extract_notes(commit, seen_prs, False, crate_names)
+            pr, notes, rollout = extract_notes(commit, seen_prs, False, crate_names, is_test)
         except ValueError as exc:
             print(f"Error while processing release notes in commit {commit}: {exc}")
             sys.exit(1)
@@ -575,7 +557,7 @@ def do_generate(from_, to):
             print()
 
     if rollout_entries:
-        print(f"## {BREAKING_ICON} Breaking Changes Rollout\n")
+        print(f"## 🚨 Breaking Changes Rollout\n")
         for crate, networks in rollout_entries.items():
             print(f"### {crate}\n")
             for network in ROLLOUT_NETWORKS:
@@ -591,9 +573,9 @@ def do_generate(from_, to):
 
 args = parse_args()
 if args["command"] == "generate":
-    do_generate(args["from"], args["to"])
-elif args["command"] == "print":
-    do_generate(args["from"], args["to"])
+    do_generate(args["from"], args["to"], False)
+if args["command"] == "test":
+    do_generate(args["from"], args["to"], True)
 elif args["command"] == "check":
     do_check(args["commit"], False)
 elif args["command"] == "check-pr":
