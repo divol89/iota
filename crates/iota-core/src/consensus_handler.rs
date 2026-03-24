@@ -90,6 +90,7 @@ impl ConsensusHandlerInitializer {
 
         ConsensusHandler::new(
             self.epoch_store.clone(),
+            self.state.clone(),
             self.checkpoint_service.clone(),
             self.state.transaction_manager().clone(),
             self.state.get_object_cache_reader().clone(),
@@ -107,6 +108,8 @@ pub struct ConsensusHandler<C> {
     /// epoch, with the corresponding store. This store is also used to get
     /// the current epoch ID.
     epoch_store: Arc<AuthorityPerEpochStore>,
+    /// The authority state, used for post-consensus transaction validation.
+    state: Arc<AuthorityState>,
     /// Holds the indices, hash and stats after the last consensus commit
     /// It is used for avoiding replaying already processed transactions,
     /// checking chain consistency, and accumulating per-epoch consensus output
@@ -139,6 +142,7 @@ const PROCESSED_CACHE_CAP: usize = 1024 * 1024;
 impl<C> ConsensusHandler<C> {
     pub fn new(
         epoch_store: Arc<AuthorityPerEpochStore>,
+        state: Arc<AuthorityState>,
         checkpoint_service: Arc<C>,
         transaction_manager: Arc<TransactionManager>,
         cache_reader: Arc<dyn ObjectCacheRead>,
@@ -165,6 +169,7 @@ impl<C> ConsensusHandler<C> {
 
         Self {
             epoch_store,
+            state,
             last_consensus_stats,
             checkpoint_service,
             cache_reader,
@@ -401,6 +406,7 @@ impl<C: CheckpointServiceNotify + Send + Sync> ConsensusHandler<C> {
                 self.tx_reader.as_ref(),
                 &ConsensusCommitInfo::new(&consensus_output),
                 &self.metrics,
+                &self.state,
             )
             .await
             .expect("Unrecoverable error in consensus handler");
@@ -897,6 +903,7 @@ mod tests {
 
         let mut consensus_handler = ConsensusHandler::new(
             epoch_store,
+            state.clone(),
             Arc::new(CheckpointServiceNoop {}),
             state.transaction_manager().clone(),
             state.get_object_cache_reader().clone(),
@@ -1046,6 +1053,7 @@ mod tests {
 
         let mut consensus_handler = ConsensusHandler::new(
             epoch_store.clone(),
+            state.clone(),
             Arc::new(CheckpointServiceNoop {}),
             state.transaction_manager().clone(),
             state.get_object_cache_reader().clone(),
