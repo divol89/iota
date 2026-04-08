@@ -8,7 +8,13 @@ use std::{
 };
 
 use enum_dispatch::enum_dispatch;
-use fastcrypto::{error::FastCryptoError, traits::ToFromBytes};
+use fastcrypto::{
+    ed25519::{Ed25519PublicKey, Ed25519Signature},
+    error::FastCryptoError,
+    secp256k1::{Secp256k1PublicKey, Secp256k1Signature},
+    secp256r1::{Secp256r1PublicKey, Secp256r1Signature},
+    traits::{ToFromBytes, VerifyingKey},
+};
 use iota_protocol_config::ProtocolConfig;
 use iota_sdk_types::crypto::IntentMessage;
 use once_cell::sync::OnceCell;
@@ -124,6 +130,91 @@ impl MoveAuthenticator {
     /// Validity check for MoveAuthenticator.
     pub fn validity_check(&self, config: &ProtocolConfig) -> UserInputResult {
         self.inner.validity_check(config)
+    }
+
+    /// Verifies a built-in signature (ed25519/secp256k1/secp256r1) using the
+    /// standard signature message flow over
+    /// `IntentMessage::new(Intent::iota_transaction(), tx_data)`.
+    ///
+    /// Expects `call_args[0]` to be a `Pure` argument containing
+    /// BCS-encoded `Vec<u8>` signature bytes, as produced by the built-in
+    /// authenticator Move module.
+    pub fn verify_builtin_signature(
+        &self,
+        scheme: SignatureScheme,
+        pk_bytes: &[u8],
+        message: &[u8],
+    ) -> IotaResult<()> {
+        let call_args = self.call_args();
+        if call_args.len() != 1 {
+            return Err(IotaError::InvalidSignature {
+                error: "Built-in authenticator expects exactly one call argument (signature: vector<u8>)"
+                    .into(),
+            });
+        }
+        let CallArg::Pure(arg_bytes) = &call_args[0] else {
+            return Err(IotaError::InvalidSignature {
+                error: "Built-in authenticator argument must be a pure vector<u8>".into(),
+            });
+        };
+        let sig_bytes =
+            bcs::from_bytes::<Vec<u8>>(arg_bytes).map_err(|e| IotaError::InvalidSignature {
+                error: format!("Built-in authenticator signature argument BCS decode failed: {e}"),
+            })?;
+
+        match scheme {
+            SignatureScheme::ED25519 => {
+                let sig = Ed25519Signature::from_bytes(&sig_bytes).map_err(|e| {
+                    IotaError::InvalidSignature {
+                        error: format!("Invalid Ed25519 signature: {e}"),
+                    }
+                })?;
+                let pk = Ed25519PublicKey::from_bytes(pk_bytes).map_err(|e| {
+                    IotaError::InvalidSignature {
+                        error: format!("Invalid Ed25519 public key: {e}"),
+                    }
+                })?;
+                pk.verify(message, &sig)
+                    .map_err(|e| IotaError::InvalidSignature {
+                        error: format!("Ed25519 signature verification failed: {e}"),
+                    })
+            }
+            SignatureScheme::Secp256k1 => {
+                let sig = Secp256k1Signature::from_bytes(&sig_bytes).map_err(|e| {
+                    IotaError::InvalidSignature {
+                        error: format!("Invalid Secp256k1 signature: {e}"),
+                    }
+                })?;
+                let pk = Secp256k1PublicKey::from_bytes(pk_bytes).map_err(|e| {
+                    IotaError::InvalidSignature {
+                        error: format!("Invalid Secp256k1 public key: {e}"),
+                    }
+                })?;
+                pk.verify(message, &sig)
+                    .map_err(|e| IotaError::InvalidSignature {
+                        error: format!("Secp256k1 signature verification failed: {e}"),
+                    })
+            }
+            SignatureScheme::Secp256r1 => {
+                let sig = Secp256r1Signature::from_bytes(&sig_bytes).map_err(|e| {
+                    IotaError::InvalidSignature {
+                        error: format!("Invalid Secp256r1 signature: {e}"),
+                    }
+                })?;
+                let pk = Secp256r1PublicKey::from_bytes(pk_bytes).map_err(|e| {
+                    IotaError::InvalidSignature {
+                        error: format!("Invalid Secp256r1 public key: {e}"),
+                    }
+                })?;
+                pk.verify(message, &sig)
+                    .map_err(|e| IotaError::InvalidSignature {
+                        error: format!("Secp256r1 signature verification failed: {e}"),
+                    })
+            }
+            _ => Err(IotaError::InvalidSignature {
+                error: "Unsupported signature scheme for built-in authenticator".into(),
+            }),
+        }
     }
 }
 

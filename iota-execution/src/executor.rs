@@ -7,7 +7,7 @@ use std::{cell::RefCell, collections::HashSet, rc::Rc, sync::Arc};
 use iota_protocol_config::ProtocolConfig;
 use iota_types::{
     account_abstraction::authenticator_function::{
-        AuthenticatorFunctionRef, AuthenticatorFunctionRefForExecution,
+        AuthenticatorFunctionRefForExecution, AuthenticatorFunctionRefForSigning,
     },
     base_types::{IotaAddress, TxContext},
     committee::EpochId,
@@ -132,7 +132,7 @@ pub trait Executor {
         // Authentication
         authenticators: Vec<(
             MoveAuthenticator,
-            AuthenticatorFunctionRef,
+            AuthenticatorFunctionRefForSigning,
             CheckedInputObjects,
         )>,
         aggregated_authenticator_input_objects: CheckedInputObjects,

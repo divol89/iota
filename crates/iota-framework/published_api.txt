@@ -1480,6 +1480,9 @@ module_name
 function_name
 	public fun
 	0x2::authenticator_function
+create_auth_function_ref_v1_inner
+	public(package) fun
+	0x2::authenticator_function
 ImmutableAccountCreated
 	public struct
 	0x2::account
@@ -2869,6 +2872,36 @@ burn_balance
 total_supply
 	public fun
 	0x2::iota
+PublicKeyFieldName
+	public struct
+	0x2::public_key_field
+attach_public_key
+	public fun
+	0x2::public_key_field
+detach_public_key
+	public fun
+	0x2::public_key_field
+rotate_public_key
+	public fun
+	0x2::public_key_field
+has_public_key
+	public fun
+	0x2::public_key_field
+borrow_public_key
+	public fun
+	0x2::public_key_field
+public_key_field_name
+	fun
+	0x2::public_key_field
+ed25519_authenticator_function_ref_v1
+	public fun
+	0x2::iota_authenticator_functions
+secp256k1_authenticator_function_ref_v1
+	public fun
+	0x2::iota_authenticator_functions
+secp256r1_authenticator_function_ref_v1
+	public fun
+	0x2::iota_authenticator_functions
 VecSet
 	public struct
 	0x2::vec_set

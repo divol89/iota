@@ -3,3 +3,5 @@
 
 pub mod account;
 pub mod authenticator_function;
+pub mod iota_authenticator_functions;
+pub mod public_key_field;
