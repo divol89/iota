@@ -608,6 +608,16 @@ impl Object {
         .into()
     }
 
+    /// Make a new random test shared object.
+    pub fn new_shared_implicit_account_object(id: ObjectID) -> Object {
+        // TODO make of type Account from the framework once that is created
+        let obj = MoveObject::new_gas_coin(OBJECT_START_VERSION, id, 0);
+        let owner = Owner::Shared {
+            initial_shared_version: obj.version(),
+        };
+        Object::new_move(obj, owner, TransactionDigest::genesis_marker())
+    }
+
     pub fn new_package_from_data(data: Data, previous_transaction: TransactionDigest) -> Self {
         ObjectInner {
             data,

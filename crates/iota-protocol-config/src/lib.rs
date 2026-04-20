@@ -19,7 +19,7 @@ use tracing::{info, warn};
 
 /// The minimum and maximum protocol versions supported by this build.
 const MIN_PROTOCOL_VERSION: u64 = 1;
-pub const MAX_PROTOCOL_VERSION: u64 = 24;
+pub const MAX_PROTOCOL_VERSION: u64 = 25;
 
 /// Protocol version that IIP8 took effect.
 pub const PROTOCOL_VERSION_IIP8: u64 = 20;
@@ -442,6 +442,11 @@ struct FeatureFlags {
     // If true, enables the authentication of a sponsor account using Move code.
     #[serde(skip_serializing_if = "is_false")]
     enable_move_authentication_for_sponsor: bool,
+
+    // If true, enables implicit Move authentication for EOAs that have an
+    // on-chain IOTAccount with an AuthenticatorFunctionRefV1 attached.
+    #[serde(skip_serializing_if = "is_false")]
+    enable_implicit_move_authentication: bool,
 
     // If true, the change epoch transaction will contain validator scores.
     #[serde(skip_serializing_if = "is_false")]
@@ -1617,6 +1622,15 @@ impl ProtocolConfig {
         enable_move_authentication_for_sponsor
     }
 
+    pub fn enable_implicit_move_authentication(&self) -> bool {
+        let enable = self.feature_flags.enable_implicit_move_authentication;
+        assert!(
+            !enable || self.enable_move_authentication(),
+            "enable_implicit_move_authentication requires enable_move_authentication to be set"
+        );
+        enable
+    }
+
     pub fn pass_validator_scores_to_advance_epoch(&self) -> bool {
         self.feature_flags.pass_validator_scores_to_advance_epoch
     }
@@ -2707,6 +2721,14 @@ impl ProtocolConfig {
                     }
                 }
 
+                25 => {
+                    if chain != Chain::Testnet && chain != Chain::Mainnet {
+                        // Enable implicit Move authentication for EOAs with on-chain
+                        // IOTAccount in devnet.
+                        cfg.feature_flags.enable_implicit_move_authentication = true;
+                    }
+                }
+
                 // Use this template when making changes:
                 //
                 //     // modify an existing constant.
@@ -2927,6 +2949,10 @@ impl ProtocolConfig {
 
     pub fn set_enable_move_authentication_for_sponsor_for_testing(&mut self, val: bool) {
         self.feature_flags.enable_move_authentication_for_sponsor = val;
+    }
+
+    pub fn set_enable_implicit_move_authentication_for_testing(&mut self, val: bool) {
+        self.feature_flags.enable_implicit_move_authentication = val;
     }
 
     pub fn set_consensus_fast_commit_sync_for_testing(&mut self, val: bool) {

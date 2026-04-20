@@ -6,10 +6,11 @@ use std::{collections::HashMap, sync::Arc};
 
 use iota_common::fatal;
 use iota_types::{
-    base_types::{EpochId, ObjectRef, TransactionDigest},
+    base_types::{EpochId, ObjectID, ObjectRef, TransactionDigest},
     error::{IotaError, IotaResult, UserInputError},
     storage::ObjectKey,
     transaction::{
+        BuiltInAccountObjectReadResult, BuiltInAccountObjectReadResultKind, BuiltInAccountObjects,
         InputObjectKind, InputObjects, ObjectReadResult, ObjectReadResultKind,
         ReceivingObjectReadResult, ReceivingObjectReadResultKind, ReceivingObjects, TransactionKey,
     },
@@ -46,8 +47,9 @@ impl TransactionInputLoader {
         _tx_digest_for_caching: Option<&TransactionDigest>,
         input_object_kinds: &[InputObjectKind],
         receiving_objects: &[ObjectRef],
+        built_in_account_objects: &[ObjectID],
         epoch_id: EpochId,
-    ) -> IotaResult<(InputObjects, ReceivingObjects)> {
+    ) -> IotaResult<(InputObjects, ReceivingObjects, BuiltInAccountObjects)> {
         // Length of input_object_kinds have been checked via validity_check() for
         // ProgrammableTransaction.
         let mut input_results = vec![None; input_object_kinds.len()];
@@ -109,6 +111,9 @@ impl TransactionInputLoader {
         let receiving_results =
             self.read_receiving_objects_for_signing(receiving_objects, epoch_id)?;
 
+        let built_in_account_objects_results =
+            self.read_built_in_account_objects(built_in_account_objects)?;
+
         Ok((
             input_results
                 .into_iter()
@@ -116,6 +121,7 @@ impl TransactionInputLoader {
                 .collect::<Vec<_>>()
                 .into(),
             receiving_results,
+            built_in_account_objects_results,
         ))
     }
 
@@ -146,8 +152,9 @@ impl TransactionInputLoader {
         // finished and the shared locks have been deleted.
         _tx_lock: &CertLockGuard,
         input_object_kinds: &[InputObjectKind],
+        built_in_account_objects: &[ObjectID],
         epoch_id: EpochId,
-    ) -> IotaResult<InputObjects> {
+    ) -> IotaResult<(InputObjects, BuiltInAccountObjects)> {
         let assigned_shared_versions_cell: OnceCell<Option<HashMap<_, _>>> = OnceCell::new();
 
         let mut results = vec![None; input_object_kinds.len()];
@@ -248,11 +255,17 @@ impl TransactionInputLoader {
             });
         }
 
-        Ok(results
-            .into_iter()
-            .map(Option::unwrap)
-            .collect::<Vec<_>>()
-            .into())
+        let built_in_account_objects_results =
+            self.read_built_in_account_objects(built_in_account_objects)?;
+
+        Ok((
+            results
+                .into_iter()
+                .map(Option::unwrap)
+                .collect::<Vec<_>>()
+                .into(),
+            built_in_account_objects_results,
+        ))
     }
 }
 
@@ -290,5 +303,31 @@ impl TransactionInputLoader {
             receiving_results.push(ReceivingObjectReadResult::new(*objref, object.into()));
         }
         Ok(receiving_results.into())
+    }
+
+    fn read_built_in_account_objects(
+        &self,
+        built_in_account_objects: &[ObjectID],
+    ) -> IotaResult<BuiltInAccountObjects> {
+        let mut built_in_account_object_results =
+            Vec::with_capacity(built_in_account_objects.len());
+        for &object_id in built_in_account_objects.iter() {
+            match self.cache.try_get_object(&object_id)? {
+                Some(object) => {
+                    if !object.is_shared() && !object.is_immutable() {
+                        return Err(UserInputError::AccountObjectNotSupported { object_id }.into());
+                    }
+                    built_in_account_object_results.push(BuiltInAccountObjectReadResult::new(
+                        object_id,
+                        object.into(),
+                    ));
+                }
+                None => built_in_account_object_results.push(BuiltInAccountObjectReadResult::new(
+                    object_id,
+                    BuiltInAccountObjectReadResultKind::Implicit,
+                )),
+            };
+        }
+        Ok(built_in_account_object_results.into())
     }
 }
