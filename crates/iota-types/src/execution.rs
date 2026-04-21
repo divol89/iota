@@ -218,7 +218,7 @@ impl From<&Object> for DynamicallyLoadedObjectMetadata {
         Self {
             version: object.version(),
             digest: object.digest(),
-            owner: object.owner().clone(),
+            owner: *object.owner(),
             storage_rebate: object.storage_rebate,
             previous_transaction: object.previous_transaction,
         }

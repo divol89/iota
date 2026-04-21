@@ -656,7 +656,7 @@ mod checked {
                 signature_scheme,
                 public_key,
                 gas_charger,
-                tx_ctx.clone(),
+                tx_ctx,
             )
         } else {
             let contains_deleted_input = authenticator_input_objects.contains_deleted_objects();
