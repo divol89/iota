@@ -62,6 +62,7 @@ const AA_AUTHENTICATE_MODULE_NAME: &str = "abstract_account_keyed";
 const AA_DELAYED_CREATE_MODULE_NAME: &str = "delayed_abstract_account";
 const AA_DELAYED_AUTHENTICATE_MODULE_NAME: &str = "delayed_abstract_account_keyed";
 const AA_AUTHENTICATE_FN_NAME_ED25519: &str = "authenticate_ed25519";
+const AA_AUTHENTICATE_FN_NAME_ED25519_EXPENSIVE: &str = "authenticate_ed25519_expensive";
 const AA_AUTHENTICATE_FN_NAME_FREE_ACCESS: &str = "authenticate_free_access";
 const AA_AUTHENTICATE_FN_NAME_WITH_SPONSOR_AND_SENDER: &str =
     "authenticate_with_sponsor_and_sender";
@@ -464,6 +465,103 @@ async fn test_abstract_account_post_consensus_failure() -> Result<(), anyhow::Er
             && ErrorBitset::from_u64(abort_code).unwrap().error_code() == Some(0)
         ),
         "Expected failure to be a Move abort in basic_keyed_aa::authenticate_ed25519",
+    );
+
+    Ok(())
+}
+
+/// Test in 3 steps that a sponsored AA TX certificate still passes
+/// post-consensus after the sender AA's authenticator function is rotated, as
+/// long as the original signature is still accepted by the new authenticator.
+/// 1) Create a valid TX1 certificate signed by validators where the sender is
+///    an AA, the sponsor is a second AA, and both authenticate via
+///    MoveAuthenticator (sender uses `authenticate_ed25519`)
+/// 2) Tamper with the sender AA shared object by issuing a second TX that
+///    rotates its authenticator function to a different ED25519 variant
+///    (`AA_AUTHENTICATE_FN_NAME_ED25519_EXPENSIVE`) that still accepts the
+///    original owner key's signature
+/// 3) Submit the original certificate TX1, which should NOT fail during
+///    post-consensus: the sender's MoveAuthenticator signature is still valid
+///    under the rotated authenticator function, so the TX executes successfully
+#[sim_test]
+async fn test_abstract_account_post_consensus_pass_after_rotation_with_aa_sponsor()
+-> Result<(), anyhow::Error> {
+    telemetry_subscribers::init_for_testing();
+    let client_ip = SocketAddr::new([127, 0, 0, 1].into(), 0);
+
+    // Build a test environment and create the sender abstract account.
+    let mut test_env = TestEnvironment::new().await;
+    test_env
+        .setup_abstract_account(AA_AUTHENTICATE_FN_NAME_ED25519)
+        .await?;
+    let sender_aa_ref = test_env.aa_ref.unwrap();
+    let aa_sender: IotaAddress = sender_aa_ref.object_id.into();
+
+    // Create a second AA that will act as the sponsor.
+    let sponsor_aa_ref = test_env.create_extra_abstract_account().await?;
+    let sponsor_addr: IotaAddress = sponsor_aa_ref.object_id.into();
+
+    let rgp = test_env.test_cluster.get_reference_gas_price().await;
+
+    // Step 1: build a sponsored AA TX (sender AA + sponsor AA) and ask the
+    // validators to sign it.
+    let sponsor_gas = test_env
+        .test_cluster
+        .fund_address_and_return_gas(rgp, Some(20_000_000_000), sponsor_addr)
+        .await;
+    let pt = test_env.craft_aa_simple_ptb(AA_MODULE_NAME)?;
+    let tx_data = test_env
+        .craft_tx_from_pt(pt, sponsor_gas, aa_sender, Some(sponsor_addr))
+        .await?;
+    let tx_digest = tx_data.digest().into_inner();
+    // Both sender AA and sponsor AA provide MoveAuthenticators.
+    let sender_aa_sig = test_env.create_move_authenticator_for_ed25519(&tx_digest)?;
+    let sponsor_aa_sig =
+        test_env.create_move_authenticator_for_ed25519_for_ref(sponsor_aa_ref, &tx_digest)?;
+    let aa_sponsored_tx =
+        Transaction::from_generic_sig_data(tx_data, vec![sender_aa_sig, sponsor_aa_sig]);
+    let cert = test_env
+        .test_cluster
+        .create_certificate(aa_sponsored_tx, Some(client_ip))
+        .await
+        .unwrap();
+
+    // Step 2: tamper with the sender AA shared object by rotating its
+    // authenticator.
+    let aa_gas2 = test_env
+        .test_cluster
+        .fund_address_and_return_gas(rgp, Some(20_000_000_000), aa_sender)
+        .await;
+    let pt2 =
+        test_env.craft_aa_rotate_owner_authenticator(AA_AUTHENTICATE_FN_NAME_ED25519_EXPENSIVE)?;
+    let tx_data2 = test_env
+        .craft_tx_from_pt(
+            pt2, aa_gas2, aa_sender, None, // No sponsor
+        )
+        .await?;
+    let tx_digest2 = tx_data2.digest().into_inner();
+    let signatures2 = vec![test_env.create_move_authenticator_for_ed25519(&tx_digest2)?];
+    let aa_rotate_tx = Transaction::from_generic_sig_data(tx_data2, signatures2);
+    // Should succeed.
+    test_env
+        .execute_and_check_tx_correctness(aa_rotate_tx)
+        .await?;
+
+    // Step 3: submit the original sponsored certificate, which should pass
+    // because the sender MoveAUthenticator signature is still valid for the newly
+    // set authenticator function.
+    let QuorumDriverResponse { effects_cert, .. } = test_env
+        .test_cluster
+        .authority_aggregator()
+        .process_certificate(
+            HandleCertificateRequestV1::new(cert).with_events(),
+            Some(client_ip),
+        )
+        .await
+        .unwrap();
+    assert!(
+        effects_cert.summary_for_debug().status.is_success(),
+        "Expected the TX execution to succeed"
     );
 
     Ok(())
@@ -1852,6 +1950,54 @@ impl TestEnvironment {
                 aa_package_id,
                 Identifier::from_static(AA_CREATE_MODULE_NAME),
                 Identifier::from_static("rotate_public_key"),
+                vec![],
+                arguments,
+            );
+        }
+        Ok(builder.finish())
+    }
+
+    fn craft_aa_rotate_owner_authenticator(
+        &mut self,
+        new_authenticate_fn_name: &str,
+    ) -> anyhow::Result<ProgrammableTransaction> {
+        let (Some(aa_ref), Some(aa_package_id), Some(aa_package_metadata_ref)) = (
+            self.aa_ref,
+            self.aa_package_id,
+            self.aa_package_metadata_ref,
+        ) else {
+            anyhow::bail!("Abstract account not created yet");
+        };
+
+        let mut builder = ProgrammableTransactionBuilder::new();
+
+        // create auth function ref
+        let arguments = vec![
+            builder.obj(CallArg::ImmutableOrOwned(aa_package_metadata_ref))?,
+            builder.pure(AA_AUTHENTICATE_MODULE_NAME)?,
+            builder.pure(new_authenticate_fn_name)?,
+        ];
+        if let Argument::Result(authenticator_function_ref_v1) = builder.programmable_move_call(
+            IOTA_FRAMEWORK_PACKAGE_ID,
+            Identifier::from_static("authenticator_function"),
+            Identifier::from_static("create_auth_function_ref_v1"),
+            vec![abstract_account_type_tag(&aa_package_id)],
+            arguments,
+        ) {
+            // rotate the authenticator in the abstract account without changing the public
+            // key.
+            let arguments = vec![
+                builder.obj(CallArg::Shared(SharedObjectRef {
+                    object_id: aa_ref.object_id,
+                    initial_shared_version: aa_ref.version,
+                    mutable: true,
+                }))?,
+                Argument::Result(authenticator_function_ref_v1),
+            ];
+            builder.programmable_move_call(
+                aa_package_id,
+                Identifier::from_static(AA_CREATE_MODULE_NAME),
+                Identifier::from_static("rotate_auth_function_without_pub_key"),
                 vec![],
                 arguments,
             );

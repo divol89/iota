@@ -57,6 +57,17 @@ public fun rotate_public_key(
     account.rotate_auth_function_ref_v1(authenticator, ctx);
 }
 
+/// Rotates the account owner authenticator to a new one without changing the public key.
+/// Only the account itself can call this function.
+public fun rotate_auth_function_without_pub_key(
+    account: &mut AbstractAccount,
+    authenticator: AuthenticatorFunctionRefV1<AbstractAccount>,
+    ctx: &TxContext,
+) {
+    // Update the account authenticator dynamic field. It is expected that the field already exists.
+    account.rotate_auth_function_ref_v1(authenticator, ctx);
+}
+
 /// Ed25519 signature authenticator.
 #[authenticator]
 public fun authenticate_ed25519(
@@ -66,6 +77,29 @@ public fun authenticate_ed25519(
     ctx: &TxContext,
 ) {
     // Check the signature.
+    basic_keyed_aa::authenticate_ed25519(
+        &signature,
+        borrow_public_key(account),
+        actx,
+        ctx,
+    );
+}
+
+/// Ed25519 signature authenticator with an expensive loop.
+#[authenticator]
+public fun authenticate_ed25519_expensive(
+    account: &AbstractAccount,
+    signature: vector<u8>,
+    actx: &AuthContext,
+    ctx: &TxContext,
+) {
+    // Expensive loop to simulate a heavy computation.
+    let mut sum = 0;
+    let mut i = 0;
+    while (i < 100) {
+        sum = sum + i;
+        i = i + 1;
+    };
     basic_keyed_aa::authenticate_ed25519(
         &signature,
         borrow_public_key(account),
