@@ -5492,38 +5492,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "iota-archival"
-version = "1.25.0-alpha"
-dependencies = [
- "anyhow",
- "byteorder",
- "bytes",
- "ed25519-consensus",
- "fastcrypto",
- "futures",
- "indicatif",
- "iota-common",
- "iota-config",
- "iota-macros",
- "iota-simulator",
- "iota-storage",
- "iota-swarm-config",
- "iota-types",
- "more-asserts",
- "move-binary-format",
- "move-core-types",
- "num_enum",
- "object_store 0.13.1",
- "prometheus",
- "rand 0.8.6",
- "serde",
- "serde_json",
- "tempfile",
- "tokio",
- "tracing",
-]
-
-[[package]]
 name = "iota-authority-aggregation"
 version = "1.25.0-alpha"
 dependencies = [
@@ -5656,7 +5624,6 @@ dependencies = [
  "fastcrypto-tbls",
  "fs_extra",
  "futures",
- "iota-archival",
  "iota-authority-aggregation",
  "iota-common",
  "iota-config",
@@ -5779,7 +5746,6 @@ dependencies = [
  "byteorder",
  "bytes",
  "futures",
- "iota-archival",
  "iota-config",
  "iota-data-ingestion-core",
  "iota-kvstore",
@@ -6650,7 +6616,6 @@ dependencies = [
  "bcs",
  "bin-version",
  "clap",
- "iota-archival",
  "iota-config",
  "iota-data-ingestion-core",
  "iota-graphql-rpc-client",
@@ -6912,9 +6877,9 @@ dependencies = [
  "fastcrypto-tbls",
  "futures",
  "governor",
- "iota-archival",
  "iota-common",
  "iota-config",
+ "iota-data-ingestion-core",
  "iota-macros",
  "iota-metrics",
  "iota-network-stack",
@@ -6981,7 +6946,6 @@ dependencies = [
  "clap",
  "futures",
  "humantime",
- "iota-archival",
  "iota-common",
  "iota-config",
  "iota-core",
@@ -7771,7 +7735,6 @@ dependencies = [
  "hex",
  "indicatif",
  "inquire",
- "iota-archival",
  "iota-common",
  "iota-config",
  "iota-core",

@@ -8,7 +8,6 @@ use anyhow::Result;
 use clap::*;
 use fastcrypto::encoding::Encoding;
 use futures::{StreamExt, future::join_all};
-use iota_archival::{read_manifest_as_json, write_manifest_from_json};
 use iota_config::{
     Config,
     genesis::Genesis,
@@ -31,9 +30,8 @@ use crate::{
     ConciseObjectOutput, GroupedObjectOutput, SnapshotVerifyMode, VerboseObjectOutput,
     check_completed_snapshot,
     db_tool::{DbToolCommand, execute_db_tool_command, print_db_all_tables},
-    download_db_snapshot, download_formal_snapshot, dump_checkpoints_from_archive,
-    get_latest_available_epoch, get_object, get_transaction_block, make_clients,
-    restore_from_db_checkpoint, verify_archive, verify_archive_by_checksum,
+    download_db_snapshot, download_formal_snapshot, get_latest_available_epoch, get_object,
+    get_transaction_block, make_clients, restore_from_db_checkpoint,
 };
 
 #[derive(Parser, Clone, ValueEnum)]
@@ -119,49 +117,6 @@ pub enum ToolCommand {
         db_path: String,
         #[command(subcommand)]
         cmd: Option<DbToolCommand>,
-    },
-
-    /// Tool to verify the archive store
-    VerifyArchive {
-        #[arg(long)]
-        genesis: PathBuf,
-        #[command(flatten)]
-        object_store_config: ObjectStoreConfig,
-        #[arg(default_value_t = 5)]
-        download_concurrency: usize,
-    },
-
-    /// Tool to print the archive manifest
-    PrintArchiveManifest {
-        #[command(flatten)]
-        object_store_config: ObjectStoreConfig,
-    },
-    /// Tool to update the archive manifest
-    UpdateArchiveManifest {
-        #[command(flatten)]
-        object_store_config: ObjectStoreConfig,
-        #[arg(long = "archive-path")]
-        archive_json_path: PathBuf,
-    },
-    /// Tool to verify the archive store by comparing file checksums
-    #[command(name = "verify-archive-from-checksums")]
-    VerifyArchiveByChecksum {
-        #[command(flatten)]
-        object_store_config: ObjectStoreConfig,
-        #[arg(default_value_t = 5)]
-        download_concurrency: usize,
-    },
-
-    /// Tool to print archive contents in checkpoint range
-    #[command(name = "dump-archive")]
-    DumpArchiveByChecksum {
-        #[command(flatten)]
-        object_store_config: ObjectStoreConfig,
-        #[arg(default_value_t = 0)]
-        start: u64,
-        end: u64,
-        #[arg(default_value_t = 80)]
-        max_content_length: usize,
     },
 
     /// Download all packages to the local filesystem from a GraphQL service.
@@ -763,102 +718,12 @@ impl ToolCommand {
                     }
                 };
 
-                let archive_bucket = Some(
-                    env::var("FORMAL_SNAPSHOT_ARCHIVE_BUCKET").unwrap_or_else(|_| match network {
-                        Chain::Mainnet => "iota-mainnet-archive".to_string(),
-                        Chain::Testnet => "iota-testnet-archive".to_string(),
-                        Chain::Unknown => {
-                            panic!("Cannot generate default archive bucket for unknown network");
-                        }
-                    }),
-                );
-
-                let mut custom_archive_enabled = false;
-                if let Ok(custom_archive_check) = env::var("CUSTOM_ARCHIVE_BUCKET") {
-                    if custom_archive_check == "true" {
-                        custom_archive_enabled = true;
-                    }
-                }
-                let archive_store_config = if custom_archive_enabled {
-                    let aws_region = Some(
-                        env::var("FORMAL_SNAPSHOT_ARCHIVE_REGION")
-                            .unwrap_or("us-west-2".to_string()),
-                    );
-
-                    let archive_bucket_type = env::var("FORMAL_SNAPSHOT_ARCHIVE_BUCKET_TYPE").expect("If setting `CUSTOM_ARCHIVE_BUCKET=true` Must set FORMAL_SNAPSHOT_ARCHIVE_BUCKET_TYPE, and credentials");
-                    match archive_bucket_type.to_ascii_lowercase().as_str() {
-                        "s3" => ObjectStoreConfig {
-                            object_store: Some(ObjectStoreType::S3),
-                            bucket: archive_bucket.filter(|s| !s.is_empty()),
-                            aws_access_key_id: env::var("AWS_ARCHIVE_ACCESS_KEY_ID").ok(),
-                            aws_secret_access_key: env::var("AWS_ARCHIVE_SECRET_ACCESS_KEY").ok(),
-                            aws_region,
-                            aws_endpoint: env::var("AWS_ARCHIVE_ENDPOINT").ok(),
-                            aws_virtual_hosted_style_request: env::var(
-                                "AWS_ARCHIVE_VIRTUAL_HOSTED_REQUESTS",
-                            )
-                            .ok()
-                            .and_then(|b| b.parse().ok())
-                            .unwrap_or(false),
-                            object_store_connection_limit: 50,
-                            no_sign_request: false,
-                            ..Default::default()
-                        },
-                        "gcs" => ObjectStoreConfig {
-                            object_store: Some(ObjectStoreType::GCS),
-                            bucket: archive_bucket,
-                            google_service_account: env::var(
-                                "GCS_ARCHIVE_SERVICE_ACCOUNT_FILE_PATH",
-                            )
-                            .ok(),
-                            object_store_connection_limit: 50,
-                            no_sign_request: false,
-                            ..Default::default()
-                        },
-                        "azure" => ObjectStoreConfig {
-                            object_store: Some(ObjectStoreType::Azure),
-                            bucket: archive_bucket,
-                            azure_storage_account: env::var("AZURE_ARCHIVE_STORAGE_ACCOUNT").ok(),
-                            azure_storage_access_key: env::var("AZURE_ARCHIVE_STORAGE_ACCESS_KEY")
-                                .ok(),
-                            object_store_connection_limit: 50,
-                            no_sign_request: false,
-                            ..Default::default()
-                        },
-                        _ => panic!(
-                            "If setting `CUSTOM_ARCHIVE_BUCKET=true` must set FORMAL_SNAPSHOT_ARCHIVE_BUCKET_TYPE to one of 'gcs', 'azure', or 's3' "
-                        ),
-                    }
-                } else {
-                    // if not explicitly overridden, just default to the permissionless archive
-                    // store
-                    let aws_endpoint = env::var("AWS_ARCHIVE_ENDPOINT").ok().or_else(|| {
-                        if network == Chain::Mainnet {
-                            Some("https://archive.mainnet.iota.cafe".to_string())
-                        } else if network == Chain::Testnet {
-                            Some("https://archive.testnet.iota.cafe".to_string())
-                        } else {
-                            None
-                        }
-                    });
-
-                    let aws_virtual_hosted_style_request =
-                        env::var("AWS_ARCHIVE_VIRTUAL_HOSTED_REQUESTS")
-                            .ok()
-                            .and_then(|b| b.parse().ok())
-                            .unwrap_or(matches!(network, Chain::Mainnet | Chain::Testnet));
-
-                    ObjectStoreConfig {
-                        object_store: Some(ObjectStoreType::S3),
-                        bucket: archive_bucket.filter(|s| !s.is_empty()),
-                        aws_region: Some("us-west-2".to_string()),
-                        aws_endpoint,
-                        aws_virtual_hosted_style_request,
-                        object_store_connection_limit: 200,
-                        no_sign_request: true,
-                        ..Default::default()
-                    }
+                let ingestion_url = match network {
+                    Chain::Mainnet => "https://checkpoints.mainnet.sui.io",
+                    Chain::Testnet => "https://checkpoints.testnet.sui.io",
+                    _ => panic!("Cannot generate default ingestion url for unknown network"),
                 };
+
                 let latest_available_epoch =
                     latest.then_some(get_latest_available_epoch(&snapshot_store_config).await?);
                 let epoch_to_download = epoch.or(latest_available_epoch).expect(
@@ -877,7 +742,7 @@ impl ToolCommand {
                     epoch_to_download,
                     &genesis,
                     snapshot_store_config,
-                    archive_store_config,
+                    ingestion_url,
                     num_parallel_downloads,
                     network,
                     verify,
@@ -1042,39 +907,6 @@ impl ToolCommand {
                 chain,
             } => {
                 execute_replay_command(rpc_url, safety_checks, use_authority, cfg_path, chain, cmd)
-                    .await?;
-            }
-            ToolCommand::VerifyArchive {
-                genesis,
-                object_store_config,
-                download_concurrency,
-            } => {
-                verify_archive(&genesis, object_store_config, download_concurrency, true).await?;
-            }
-            ToolCommand::PrintArchiveManifest {
-                object_store_config,
-            } => {
-                println!("{}", read_manifest_as_json(object_store_config).await?);
-            }
-            ToolCommand::UpdateArchiveManifest {
-                object_store_config,
-                archive_json_path,
-            } => {
-                write_manifest_from_json(object_store_config, archive_json_path).await?;
-            }
-            ToolCommand::VerifyArchiveByChecksum {
-                object_store_config,
-                download_concurrency,
-            } => {
-                verify_archive_by_checksum(object_store_config, download_concurrency).await?;
-            }
-            ToolCommand::DumpArchiveByChecksum {
-                object_store_config,
-                start,
-                end,
-                max_content_length,
-            } => {
-                dump_checkpoints_from_archive(object_store_config, start, end, max_content_length)
                     .await?;
             }
             ToolCommand::SignTransaction {
