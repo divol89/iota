@@ -17,7 +17,7 @@ mod checked {
     use iota_move_natives::object_runtime::ObjectRuntime;
     use iota_protocol_config::ProtocolConfig;
     use iota_types::{
-        auth_context,
+        IOTA_FRAMEWORK_PACKAGE_ID, auth_context,
         base_types::{
             Identifier, IotaAddress, MoveLegacyTxContext, ObjectID, RESOLVED_ASCII_STR,
             RESOLVED_STD_OPTION, RESOLVED_UTF8_STR, StructTag, TxContext, TxContextKind, TypeTag,
@@ -31,9 +31,9 @@ mod checked {
         iota_sdk_types_conversions::type_tag_core_to_sdk,
         metrics::LimitsMetrics,
         move_package::{
-            IotaAttribute, MovePackage, MovePackageExt, PackageMetadata, PackageViewFunctions,
-            PackageViewFunctionsMetadataKey, RuntimeModuleMetadata, RuntimeModuleMetadataWrapper,
-            UpgradeCap, UpgradePolicy, UpgradeReceipt, UpgradeTicket,
+            IotaAttribute, MovePackage, MovePackageExt, PackageMetadata, PackageMetadataV1,
+            PackageViewFunctions, RuntimeModuleMetadata, RuntimeModuleMetadataWrapper, UpgradeCap,
+            UpgradePolicy, UpgradeReceipt, UpgradeTicket,
             normalize_deserialized_modules_with_metadata, normalize_modules_with_metadata,
         },
         object::OBJECT_START_VERSION,
@@ -59,8 +59,8 @@ mod checked {
         normalized,
     };
     use move_core_types::{
-        account_address::AccountAddress, identifier::IdentStr, language_storage::ModuleId,
-        u256::U256,
+        account_address::AccountAddress, ident_str, identifier::IdentStr,
+        language_storage::ModuleId, u256::U256,
     };
     use move_trace_format::format::MoveTraceBuilder;
     use move_vm_runtime::{
@@ -81,6 +81,10 @@ mod checked {
         gas_charger::GasCharger,
         programmable_transactions::context::*,
     };
+
+    const ATTACH_PACKAGE_VIEW_FUNCTIONS_METADATA_FN_NAME: &IdentStr =
+        ident_str!("attach_package_view_functions_metadata");
+    const PACKAGE_METADATA_MODULE_NAME: &IdentStr = ident_str!("package_metadata");
 
     /// Executes a `ProgrammableTransaction` in the specified `ExecutionMode`,
     /// applying a series of commands to the execution context. The
@@ -382,6 +386,7 @@ mod checked {
                     cmd.dependencies,
                     cmd.package,
                     ticket,
+                    trace_builder_opt,
                 )?
             }
             _ => unimplemented!("a new Command enum variant was added and needs to be handled"),
@@ -601,6 +606,7 @@ mod checked {
                     storage_id,
                     runtime_id,
                     OBJECT_START_VERSION.as_u64(),
+                    trace_builder_opt,
                 )?;
             }
 
@@ -624,6 +630,7 @@ mod checked {
         dep_ids: Vec<ObjectID>,
         current_package_id: ObjectID,
         upgrade_ticket_arg: Arg,
+        trace_builder_opt: &mut Option<MoveTraceBuilder>,
     ) -> Result<Vec<Value>, ExecutionError> {
         assert_invariant!(
             !module_bytes.is_empty(),
@@ -727,6 +734,7 @@ mod checked {
                 storage_id,
                 runtime_id,
                 package_version,
+                trace_builder_opt,
             )?;
         }
 
@@ -973,6 +981,7 @@ mod checked {
         storage_id: ObjectID,
         runtime_id: ObjectID,
         package_version: u64,
+        trace_builder_opt: &mut Option<MoveTraceBuilder>,
     ) -> Result<(), ExecutionError> {
         let mut modules_metadata_map = BTreeMap::new();
         let mut package_view_functions_map = PackageViewFunctions::new();
@@ -1065,23 +1074,90 @@ mod checked {
                 modules_metadata_map,
             );
             // Turn the content into an object
-            let package_metadata = context.make_object_value(
+            let mut package_metadata = context.make_object_value(
                 metadata.type_(),
                 // used_in_non_entry_move_call
                 false,
                 &metadata.to_bcs_bytes(),
             )?;
             if has_package_view_functions {
-                context.attach_dynamic_field_to_object(
-                    metadata_uid,
-                    PackageViewFunctionsMetadataKey::default(),
+                package_metadata = attach_package_view_functions_metadata(
+                    context,
+                    package_metadata,
                     package_view_functions_map,
+                    trace_builder_opt,
                 )?;
             }
             // Freeze the package metadata object
             context.freeze_object(package_metadata)?
         }
         Ok(())
+    }
+
+    fn attach_package_view_functions_metadata(
+        context: &mut ExecutionContext<'_, '_, '_>,
+        package_metadata: ObjectValue,
+        package_view_functions: PackageViewFunctions,
+        trace_builder_opt: &mut Option<MoveTraceBuilder>,
+    ) -> Result<ObjectValue, ExecutionError> {
+        let mut package_metadata_bytes = Vec::new();
+        package_metadata.write_bcs_bytes(&mut package_metadata_bytes, None)?;
+        let package_view_functions_bytes = bcs::to_bytes(&package_view_functions).map_err(|e| {
+            ExecutionError::invariant_violation(format!(
+                "failed to serialize package view functions metadata: {e}"
+            ))
+        })?;
+
+        let saved_linkage = context.linkage_view.steal_linkage();
+        let result = (|| {
+            let original_address = context.set_link_context(IOTA_FRAMEWORK_PACKAGE_ID)?;
+            let runtime_id =
+                ModuleId::new(original_address, PACKAGE_METADATA_MODULE_NAME.to_owned());
+            context
+                .execute_function_bypass_visibility(
+                    &runtime_id,
+                    ATTACH_PACKAGE_VIEW_FUNCTIONS_METADATA_FN_NAME,
+                    vec![],
+                    vec![package_metadata_bytes, package_view_functions_bytes],
+                    trace_builder_opt,
+                )
+                .map_err(|e| context.convert_vm_error(e))
+        })();
+        context.linkage_view.reset_linkage();
+        let res = result.and_then(|result| {
+            let SerializedReturnValues {
+                mutable_reference_outputs,
+                return_values,
+            } = result;
+            assert_invariant!(
+                return_values.is_empty(),
+                "attach_package_view_functions_metadata should not have return values"
+            );
+            let mut mutable_reference_outputs = mutable_reference_outputs.into_iter();
+            let Some((idx, package_metadata_bytes, _layout)) = mutable_reference_outputs.next()
+            else {
+                invariant_violation!(
+                    "attach_package_view_functions_metadata should return one mutable reference output"
+                );
+            };
+            assert_invariant!(
+                mutable_reference_outputs.next().is_none(),
+                "attach_package_view_functions_metadata should return one mutable reference output"
+            );
+            assert_invariant!(
+                idx == 0,
+                "attach_package_view_functions_metadata should mutate its first argument"
+            );
+
+            context.make_object_value(
+                PackageMetadataV1::type_(),
+                // used_in_non_entry_move_call
+                false,
+                &package_metadata_bytes,
+            )
+        });
+        context.linkage_view.restore_linkage(saved_linkage)?;
+        res
     }
 
     fn get_authenticator_first_param_type_tag(
