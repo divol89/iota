@@ -654,10 +654,8 @@ impl EffectsCertifier {
         });
         self.metrics.skip_cert_corroboration_unreachable.inc();
         TransactionDriverError::SubmittedButFetchFailed {
-            error: format!(
-                "failed to get full effects from submitting validator {:?}: {} (corroboration inconclusive)",
-                initial_validator, initial_error
-            ),
+            validator: initial_validator,
+            error: format!("{initial_error} (corroboration inconclusive)"),
         }
     }
 
