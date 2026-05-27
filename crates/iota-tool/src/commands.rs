@@ -719,8 +719,8 @@ impl ToolCommand {
                 };
 
                 let ingestion_url = match network {
-                    Chain::Mainnet => "https://checkpoints.mainnet.sui.io",
-                    Chain::Testnet => "https://checkpoints.testnet.sui.io",
+                    Chain::Mainnet => "https://checkpoints.mainnet.iota.cafe",
+                    Chain::Testnet => "https://checkpoints.testnet.iota.cafe",
                     _ => panic!("Cannot generate default ingestion url for unknown network"),
                 };
 
