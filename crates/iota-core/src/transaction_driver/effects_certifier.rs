@@ -99,24 +99,18 @@ impl EffectsCertifier {
         A: AuthorityAPI + Send + Sync + 'static + Clone,
     {
         // Skip the first attempt to get full effects if it is already provided.
+        // `submit_transaction` is contracted to surface `Rejected`/`Expired`
+        // as `Err`; reaching them here is an upstream invariant break.
         let full_effects = match submit_txn_result {
             TxStatusUpdate::Submitted => None,
             TxStatusUpdate::Executed {
                 effects_digest,
                 details,
             } => details.map(|d| (effects_digest, d)),
-            TxStatusUpdate::Rejected { error } => {
+            update @ (TxStatusUpdate::Rejected { .. } | TxStatusUpdate::Expired { .. }) => {
+                debug_fatal!("submit_transaction returned non-actionable status: {update:?}");
                 return Err(TransactionDriverError::ClientInternal {
-                    error: format!(
-                        "Unexpected submission error in get_certified_finalized_effects(): {error:?}"
-                    ),
-                });
-            }
-            TxStatusUpdate::Expired { epoch } => {
-                return Err(TransactionDriverError::ClientInternal {
-                    error: format!(
-                        "Transaction expired in epoch {epoch} during get_certified_finalized_effects()",
-                    ),
+                    error: "internal driver error".to_string(),
                 });
             }
         };
@@ -274,8 +268,7 @@ impl EffectsCertifier {
                     .get(&current_target)
                     .ok_or_else(|| TransactionDriverError::ClientInternal {
                         error: format!(
-                            "Submitting validator {:?} not found in authority clients",
-                            current_target
+                            "Submitting validator {current_target:?} not found in authority clients",
                         ),
                     })?
                     .clone();
@@ -295,24 +288,13 @@ impl EffectsCertifier {
                     }
                 }
             }
-            // `Rejected` and `Expired` are filtered upstream by
-            // `drive_transaction_once` before the skip-cert path is entered;
-            // hitting them here is a driver-level invariant break, not a
-            // user-facing error.
-            TxStatusUpdate::Rejected { error } => {
-                debug_fatal!(
-                    "Rejected status reached get_effects_without_certification: {error:?}"
-                );
+            // `submit_transaction` is contracted to surface
+            // `Rejected`/`Expired` as `Err`; reaching them here is an
+            // upstream invariant break.
+            update @ (TxStatusUpdate::Rejected { .. } | TxStatusUpdate::Expired { .. }) => {
+                debug_fatal!("submit_transaction returned non-actionable status: {update:?}");
                 return Err(TransactionDriverError::ClientInternal {
-                    error: format!("Rejected reached skip-cert path: {error:?}"),
-                });
-            }
-            TxStatusUpdate::Expired { epoch } => {
-                debug_fatal!(
-                    "Expired status reached get_effects_without_certification at epoch {epoch}"
-                );
-                return Err(TransactionDriverError::ClientInternal {
-                    error: format!("Expired reached skip-cert path at epoch {epoch}"),
+                    error: "internal driver error".to_string(),
                 });
             }
         };
@@ -331,8 +313,7 @@ impl EffectsCertifier {
         if returned_tx_digest != expected_tx_digest {
             return Err(TransactionDriverError::ClientInternal {
                 error: format!(
-                    "Submitting validator {:?} returned effects for tx {:?} but we expected {:?}",
-                    current_target, returned_tx_digest, expected_tx_digest
+                    "Submitting validator {current_target:?} returned effects for tx {returned_tx_digest:?} but we expected {expected_tx_digest:?}",
                 ),
             });
         }
@@ -340,7 +321,7 @@ impl EffectsCertifier {
         self.metrics.executed_transactions.inc();
         tracing::debug!("Transaction executed (uncertified) with effects digest: {effects_digest}");
 
-        let epoch = executed_data.effects.executed_epoch();
+        let epoch = executed_data.effects.epoch();
         let effects = FinalizedEffects {
             effects: executed_data.effects,
             finality_info: EffectsFinalityInfo::UncertifiedSingleValidator(epoch),
@@ -606,10 +587,6 @@ impl EffectsCertifier {
                         });
                         (Ok(started.elapsed()), update)
                     }
-                    // TODO(#11669): rejection-shaped `IotaError`s mis-blame the
-                    // validator when wrapped as `Aborted`; distinguish
-                    // transport vs rejection at a shared classification
-                    // helper.
                     Ok(Err(e)) => (Err(()), Err(TransactionRequestError::Aborted(e))),
                     Err(_) => (
                         Err(()),

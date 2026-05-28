@@ -431,8 +431,6 @@ where
         response: &mut ExecuteTransactionResponseV1,
         metrics: &TransactionOrchestratorMetrics,
     ) {
-        use iota_types::{effects::TransactionEffectsAPI as _, message_envelope::Message as _};
-
         // Happy path: read just the effects, compare digests, and if the TD
         // response already matches the cache there's no need to re-derive
         // events / input / output objects (each derivation is N object-store
@@ -457,7 +455,7 @@ where
         let td_digest = response.effects.effects.digest();
         let cache_digest = cache_effects.digest();
         if td_digest == cache_digest {
-            let epoch = cache_effects.executed_epoch();
+            let epoch = cache_effects.epoch();
             response.effects.effects = cache_effects;
             response.effects.finality_info =
                 EffectsFinalityInfo::Checkpointed(epoch, checkpoint_seq);
@@ -511,8 +509,6 @@ where
         include_input_objects: bool,
         include_output_objects: bool,
     ) -> Result<ExecuteTransactionResponseV1, QuorumDriverError> {
-        use iota_types::effects::TransactionEffectsAPI as _;
-
         let cached = read_cached_transaction_data(
             validator_state,
             &tx_digest,
@@ -537,7 +533,7 @@ where
             output_objects,
         } = cached;
 
-        let epoch = effects.executed_epoch();
+        let epoch = effects.epoch();
         Ok(ExecuteTransactionResponseV1 {
             effects: FinalizedEffects {
                 effects,
