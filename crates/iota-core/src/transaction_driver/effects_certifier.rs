@@ -606,6 +606,10 @@ impl EffectsCertifier {
                         });
                         (Ok(started.elapsed()), update)
                     }
+                    // TODO(#11669): rejection-shaped `IotaError`s mis-blame the
+                    // validator when wrapped as `Aborted`; distinguish
+                    // transport vs rejection at a shared classification
+                    // helper.
                     Ok(Err(e)) => (Err(()), Err(TransactionRequestError::Aborted(e))),
                     Err(_) => (
                         Err(()),
