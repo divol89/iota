@@ -28,7 +28,7 @@ mod checked {
         execution_status::CommandArgumentError,
         iota_sdk_types_conversions::{struct_tag_core_to_sdk, type_tag_core_to_sdk},
         metrics::LimitsMetrics,
-        move_package::{MovePackage, MovePackageExt, derive_package_metadata_id},
+        move_package::{MovePackage, MovePackageExt},
         object::{Data, MoveObject, MoveObjectExt, Object, ObjectInner, Owner},
         storage::{BackingPackageStore, DenyListResult, PackageObject},
         transaction::{Argument, CallArg, SharedObjectRef},
@@ -275,16 +275,6 @@ mod checked {
                 .and_then(|object_runtime: &mut ObjectRuntime| object_runtime.new_id(object_id))
                 .map_err(|e| self.convert_vm_error(e.finish(Location::Undefined)))?;
             Ok(())
-        }
-
-        /// Create a new ID and update the state
-        pub(crate) fn package_derived_metadata_id(
-            &mut self,
-            package_storage_id: ObjectID,
-        ) -> Result<ObjectID, ExecutionError> {
-            let object_id = derive_package_metadata_id(package_storage_id);
-            self.record_new_uid(object_id)?;
-            Ok(object_id)
         }
 
         /// Delete an ID and update the state
