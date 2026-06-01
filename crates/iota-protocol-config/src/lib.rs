@@ -144,7 +144,8 @@ pub const PROTOCOL_VERSION_IIP8: u64 = 20;
 // Version 26: Introduce a module to allow Move code to query protocol feature
 //             flags at runtime.
 // Version 27: Only sponsor Move authentication is performed pre-consensus in
-//             devnet.
+//             devnet. Start publishing package metadata using the V2 layout
+// when             the package requires it.
 #[derive(Copy, Clone, Debug, Hash, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
 pub struct ProtocolVersion(u64);
 
@@ -484,6 +485,11 @@ struct FeatureFlags {
     // If true, only sponsor Move authentication is performed pre-consensus.
     #[serde(skip_serializing_if = "is_false")]
     pre_consensus_sponsor_only_move_authentication: bool,
+
+    // If true, package metadata can be published as PackageMetadataV2 when the
+    // package requires the V2 layout. If false, PackageMetadataV1 is used.
+    #[serde(skip_serializing_if = "is_false")]
+    package_metadata_v2: bool,
 }
 
 fn is_true(b: &bool) -> bool {
@@ -1720,6 +1726,15 @@ impl ProtocolConfig {
         }
         pre_consensus_sponsor_only_move_authentication
     }
+
+    pub fn package_metadata_v2(&self) -> bool {
+        let res = self.feature_flags.package_metadata_v2;
+        assert!(
+            !res || self.publish_package_metadata(),
+            "package_metadata_v2 requires publish_package_metadata to be enabled"
+        );
+        res
+    }
 }
 
 #[cfg(not(msim))]
@@ -2811,6 +2826,9 @@ impl ProtocolConfig {
                         cfg.feature_flags
                             .pre_consensus_sponsor_only_move_authentication = true;
                     }
+                    if cfg.feature_flags.publish_package_metadata {
+                        cfg.feature_flags.package_metadata_v2 = true;
+                    }
                 }
                 // Use this template when making changes:
                 //
@@ -3049,6 +3067,10 @@ impl ProtocolConfig {
     pub fn set_pre_consensus_sponsor_only_move_authentication_for_testing(&mut self, val: bool) {
         self.feature_flags
             .pre_consensus_sponsor_only_move_authentication = val;
+    }
+
+    pub fn set_package_metadata_v2_for_testing(&mut self, val: bool) {
+        self.feature_flags.package_metadata_v2 = val;
     }
 }
 
