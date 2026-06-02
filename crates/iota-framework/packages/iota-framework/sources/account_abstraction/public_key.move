@@ -137,7 +137,9 @@ public fun raw_bytes(self: &PublicKey): &vector<u8> {
 ///   Ed25519:   Blake2b256(pubkey)
 ///   Secp256k1: Blake2b256([0x01] || pubkey)
 ///   Secp256r1: Blake2b256([0x02] || pubkey)
-///   MultiSig:  Blake2b256([0x03] || threshold_le16 || (scheme_flag || pk || weight_u8)*)
+///   MultiSig:  Blake2b256([0x03] || threshold_le16 || per_signer*)
+///     where per_signer = pk_bytes || weight          for Ed25519 signers
+///                      = scheme_flag || pk_bytes || weight  for all others
 ///   Passkey:   Blake2b256([0x06] || pubkey)
 public fun to_iota_address(self: &PublicKey): address {
     let scheme = self.scheme;
@@ -161,8 +163,10 @@ public fun to_iota_address(self: &PublicKey): address {
 // === Private Functions ===
 
 /// Builds the hash preimage for a MultiSig address, matching the Rust node:
-///   [0x03] || threshold_le16 || (scheme_flag || pk_bytes || weight_u8)*
+///   [0x03] || threshold_le16 || (pk_bytes || weight_u8)*   for Ed25519 signers
+///   [0x03] || threshold_le16 || (scheme_flag || pk_bytes || weight_u8)*  for all other signers
 ///
+/// Ed25519 does NOT get a flag byte prepended (mirrors `update_hasher_with_flag`).
 /// BCS stores signers before threshold; the hash puts threshold first.
 fun multisig_hash_input(raw_bytes: &vector<u8>): vector<u8> {
     let mut bcs = bcs::new(*raw_bytes);
@@ -174,11 +178,13 @@ fun multisig_hash_input(raw_bytes: &vector<u8>): vector<u8> {
         let tag = bcs.peel_enum_tag();
         let key_len = if (tag == MULTISIG_KEY_TAG_ED25519) ED25519_PUBLIC_KEY_LENGTH
                       else SECP256_PUBLIC_KEY_LENGTH;
-        let scheme_flag = if (tag == MULTISIG_KEY_TAG_ED25519) 0x00u8
-            else if (tag == MULTISIG_KEY_TAG_SECP256K1) 0x01u8
-            else if (tag == MULTISIG_KEY_TAG_SECP256R1) 0x02u8
-            else 0x06u8; // PASSKEY
-        signer_bytes.push_back(scheme_flag);
+        // Ed25519 gets no flag (mirrors Rust update_hasher_with_flag which skips Ed25519).
+        if (tag != MULTISIG_KEY_TAG_ED25519) {
+            let scheme_flag = if (tag == MULTISIG_KEY_TAG_SECP256K1) 0x01u8
+                else if (tag == MULTISIG_KEY_TAG_SECP256R1) 0x02u8
+                else 0x06u8; // PASSKEY
+            signer_bytes.push_back(scheme_flag);
+        };
         let mut j = 0;
         while (j < key_len) {
             signer_bytes.push_back(bcs.peel_u8());

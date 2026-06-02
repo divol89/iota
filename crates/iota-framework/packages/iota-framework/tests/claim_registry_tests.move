@@ -28,7 +28,8 @@ const SECP256R1_PK: vector<u8> =
 
 // Minimal BCS-encoded MultiSigPublicKey: 1 Ed25519 signer (ED25519_PK raw), weight=1, threshold=1.
 // Layout: [0x03 (MultiSig flag)] || ULEB128(num_signers=1) | ULEB128(tag=0 Ed25519) | 32-byte key | u8(weight=1) | u16-LE(threshold=1)
-// address = Blake2b256([0x03] || threshold_le16 || (scheme_flag || pk || weight)*)
+// address = Blake2b256([0x03] || threshold_le16 || pk || weight)
+// Note: Ed25519 signers do NOT get a scheme_flag prepended (mirrors Rust update_hasher_with_flag).
 const MULTISIG_PK: vector<u8> =
     x"030100cc62332e34bb2d5cd69f60efbb2a36cb916c7eb458301ea36636c4dbb012bd88010100";
 
@@ -43,12 +44,13 @@ const PASSKEY_PK: vector<u8> =
 // the Move to_iota_address() under test.
 // Ed25519:  Blake2b256(raw)
 // Others:   Blake2b256([flag] || raw)
-// MultiSig: Blake2b256([0x03] || threshold_le16 || (scheme_flag || pk || weight)*)
+// MultiSig: Blake2b256([0x03] || threshold_le16 || per_signer*)
+//           where per_signer = pk || weight for Ed25519, scheme_flag || pk || weight for others
 const ED25519_ADDR:   address = @0xcef6bafea1d59edb73ff5ec9e8aa58354796e1b572b695d64237ce9c15a34a03;
 const SECP256K1_ADDR: address = @0x2fecbdf2652b089c64d127158d388621fdbbd156533fbcca5a0082aa0d2939fa;
 const SECP256R1_ADDR: address = @0x318f591092f10b67a81963954fb9539ea3919444417726be4e1b95ce44fe2fc0;
 const PASSKEY_ADDR:   address = @0xa2f90cd2552d45ab5ba157dacf19597e2018108c6a80e4d7a4a5680d1542a7e8;
-const MULTISIG_ADDR:  address = @0x5792280ab4865b96d664366ef04edfd2953f5d67465b4f08d290d89f0616ab31;
+const MULTISIG_ADDR:  address = @0x1cc23b51b2e3c8641eea35b29114a53ad7a76643dcb2763d12290a7b83cac525;
 
 // ============================================================
 // Helpers
@@ -249,7 +251,7 @@ fun test_claim_address_mismatch() {
 #[expected_failure(abort_code = claim_registry::EAlreadyClaimed)]
 fun test_claim_double_claim() {
     let mut scenario = setup();
-    let sender = claim_registry::derive_address_for_testing(&ED25519_PK);
+    let sender = ED25519_ADDR;
 
     scenario.next_tx(sender);
     {
