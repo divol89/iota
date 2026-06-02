@@ -17,6 +17,7 @@ use iota_types::{
     crypto::SignatureScheme,
     effects::TransactionEffectsAPI,
     execution_status::ExecutionFailureStatus,
+    iota_system_state::IotaSystemStateTrait,
     object::Owner,
     programmable_transaction_builder::ProgrammableTransactionBuilder,
     transaction::{Argument, CallArg, ObjectArg},
