@@ -384,9 +384,10 @@ async fn test_claim_happy_path_secp256r1() -> anyhow::Result<()> {
     run_claim_happy_path(SignatureScheme::Secp256r1, 0x02).await
 }
 
-/// MultiSig happy path: 1-of-2 multisig (two Ed25519 component keys, threshold 1).
-/// Verifies that the Move `to_iota_address()` multisig derivation matches the
-/// node's address and that the DummyAccount is created with the correct object-ID.
+/// MultiSig happy path: 1-of-2 multisig (two Ed25519 component keys, threshold
+/// 1). Verifies that the Move `to_iota_address()` multisig derivation matches
+/// the node's address and that the DummyAccount is created with the correct
+/// object-ID.
 #[sim_test]
 async fn test_claim_happy_path_multisig() -> anyhow::Result<()> {
     use iota_test_transaction_builder::TestTransactionBuilder;
@@ -396,7 +397,8 @@ async fn test_claim_happy_path_multisig() -> anyhow::Result<()> {
 
     let cluster = TestClusterBuilder::new().build().await;
 
-    // Two deterministic test key pairs (Ed25519, Secp256k1) reused across IOTA tests.
+    // Two deterministic test key pairs (Ed25519, Secp256k1) reused across IOTA
+    // tests.
     let ks = keys();
     let pk0 = ks[0].public();
     let pk1 = ks[1].public();
@@ -405,7 +407,8 @@ async fn test_claim_happy_path_multisig() -> anyhow::Result<()> {
     let multisig_pk = MultiSigPublicKey::new(vec![pk0, pk1], vec![1, 1], 1)?;
     let multisig_addr = IotaAddress::from(&multisig_pk);
 
-    // Prefixed bytes for `from_prefixed_bytes`: [0x03 flag] || BCS(MultiSigPublicKey).
+    // Prefixed bytes for `from_prefixed_bytes`: [0x03 flag] ||
+    // BCS(MultiSigPublicKey).
     let mut prefixed = vec![0x03u8];
     prefixed.extend(bcs::to_bytes(&multisig_pk)?);
 
@@ -422,9 +425,7 @@ async fn test_claim_happy_path_multisig() -> anyhow::Result<()> {
         .programmable(pt)
         .build_and_sign_multisig(multisig_pk.clone(), &[&ks[0]], 0b01);
 
-    let (effects, _) = cluster
-        .execute_transaction_return_raw_effects(tx)
-        .await?;
+    let (effects, _) = cluster.execute_transaction_return_raw_effects(tx).await?;
 
     assert!(
         effects.status().is_ok(),
