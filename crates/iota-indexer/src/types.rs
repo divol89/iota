@@ -807,7 +807,7 @@ pub(crate) mod grpc_conversion {
         objects
             .objects
             .iter()
-            .map(|o| -> IndexerResult<_> { Ok(Object::try_from(o.object()?)?) })
+            .map(|o| -> IndexerResult<_> { Ok(Object::from(o.object()?)) })
             .collect()
     }
 
