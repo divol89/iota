@@ -15,7 +15,7 @@ use anyhow::bail;
 use fastcrypto::encoding::Base64;
 use iota_package_management::{
     PublishedAtError, resolve_published_id,
-    system_package_versions::{SYSTEM_GIT_REPO, SystemPackagesVersion},
+    system_package_versions::{SYSTEM_GIT_REPO, SystemPackagesVersion, latest_system_packages},
 };
 use iota_sdk_types::ObjectId;
 use iota_types::{
@@ -783,6 +783,53 @@ pub fn implicit_deps(packages: &SystemPackagesVersion) -> Dependencies {
             )
         })
         .collect()
+}
+
+/// Create a set of [Dependencies] from a [SystemPackagesVersion] that resolve
+/// to the system package sources on the local filesystem, relative to this
+/// crate's location in the iota source tree.
+///
+/// Unlike [implicit_deps], which produces git dependencies pinned to a
+/// published framework revision, these dependencies point at the framework
+/// sources of the *exact same checkout* this crate was compiled from. This is
+/// what the benchmark/surfer test harnesses that depend on iota as a git
+/// dependency want: their Move packages are then built
+/// against the framework of the commit under test, with no network access and
+/// no dependence on the moving `develop` branch.
+///
+/// This relies on the compile-time `CARGO_MANIFEST_DIR` still existing on disk
+/// at runtime, which holds when the binary is built and run on the same host
+/// (as in the benchmark/surfer test harnesses).
+pub fn local_implicit_deps(packages: &SystemPackagesVersion) -> Dependencies {
+    // `CARGO_MANIFEST_DIR` is `<repo>/crates/iota-move-build`, so the repo root is
+    // two levels up and each system package lives at `<repo>/<repo_path>`.
+    let repo_root = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .and_then(Path::parent)
+        .expect("iota-move-build manifest dir should have a grandparent");
+    packages
+        .packages
+        .iter()
+        .map(|package| {
+            (
+                package.package_name.clone().into(),
+                Dependency::Internal(InternalDependency {
+                    kind: DependencyKind::Local(repo_root.join(&package.repo_path)),
+                    subst: None,
+                    digest: None,
+                    dep_override: true,
+                }),
+            )
+        })
+        .collect()
+}
+
+/// Convenience wrapper around [local_implicit_deps] for the latest known system
+/// package version. Useful for callers (e.g. the `#[sim_test]` static
+/// initializer) that don't have a [SystemPackagesVersion] on hand and just want
+/// the framework resolved from the local checkout.
+pub fn local_implicit_deps_latest() -> Dependencies {
+    local_implicit_deps(latest_system_packages())
 }
 
 impl GetModule for CompiledPackage {
