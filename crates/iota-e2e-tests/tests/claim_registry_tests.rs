@@ -11,13 +11,14 @@
 use fastcrypto::encoding::{Encoding, Hex};
 use iota_keys::keystore::AccountKeystore;
 use iota_macros::sim_test;
+#[cfg(msim)]
+use iota_types::iota_system_state::IotaSystemStateTrait;
 use iota_types::{
     IOTA_CLAIM_REGISTRY_OBJECT_ID, IOTA_FRAMEWORK_ADDRESS, IOTA_FRAMEWORK_PACKAGE_ID,
     base_types::{IotaAddress, ObjectID},
     crypto::SignatureScheme,
     effects::TransactionEffectsAPI,
     execution_status::ExecutionFailureStatus,
-    iota_system_state::IotaSystemStateTrait,
     object::Owner,
     programmable_transaction_builder::ProgrammableTransactionBuilder,
     transaction::{Argument, CallArg, ObjectArg},
