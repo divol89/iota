@@ -9,7 +9,7 @@ use async_trait::async_trait;
 use bytes::Bytes;
 use futures::stream::{self, StreamExt};
 use iota_types::{
-    base_types::{ObjectID, SequenceNumber},
+    base_types::{IotaAddress, ObjectID, SequenceNumber},
     digests::{CheckpointDigest, TransactionDigest},
     effects::{TransactionEffects, TransactionEffectsAPI, TransactionEvents},
     error::{IotaError, IotaResult},
@@ -113,6 +113,9 @@ pub enum ItemType {
     #[strum(serialize = "evtx")]
     #[serde(rename = "evtx")]
     EventTransactionDigest,
+    #[strum(serialize = "addr2tx")]
+    #[serde(rename = "addr2tx")]
+    AddressToTransactionDigest,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -125,6 +128,7 @@ pub enum Key {
     TransactionToCheckpoint(TransactionDigest),
     ObjectKey(ObjectKey),
     EventsByTransactionDigest(TransactionDigest),
+    AddressToTransactionDigests(IotaAddress),
 }
 
 impl Key {
@@ -198,6 +202,9 @@ impl Key {
             ItemType::EventTransactionDigest => Ok(Key::EventsByTransactionDigest(
                 TransactionDigest::from_bytes(decoded_key.as_slice())?,
             )),
+            ItemType::AddressToTransactionDigest => Ok(Key::AddressToTransactionDigests(
+                IotaAddress::from_bytes(decoded_key.as_slice())?,
+            )),
         }
     }
 
@@ -230,6 +237,7 @@ impl Key {
             Key::TransactionToCheckpoint(_) => ItemType::TransactionToCheckpoint,
             Key::ObjectKey(_) => ItemType::Object,
             Key::EventsByTransactionDigest(_) => ItemType::EventTransactionDigest,
+            Key::AddressToTransactionDigests(_) => ItemType::AddressToTransactionDigest,
         }
     }
 
@@ -277,6 +285,8 @@ impl Key {
             Key::TransactionToCheckpoint(digest) => encode_digest(digest),
             Key::ObjectKey(object_key) => encode_object_key(object_key),
             Key::EventsByTransactionDigest(digest) => encode_digest(digest),
+            // TODO: `encode_digest` could be renamed to `encode` to fit more use cases.
+            Key::AddressToTransactionDigests(address) => encode_digest(address),
         };
 
         (self.item_type(), encoded_key_digest)

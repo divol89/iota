@@ -46,6 +46,12 @@ impl Server {
             .route("/health", get(health::health))
             .route("/{item_type}", post(kv_store::multi_get_data))
             .route("/{item_type}/{key}", get(kv_store::data_as_bytes))
+            // static and dynamic route segments are allowed to overlap. If they do, static segments
+            // will be given higher priority.
+            .route(
+                "/addr2tx/{address}",
+                get(kv_store::transaction_digests_by_address),
+            )
             .with_state(shared_state)
             .fallback(fallback);
 
