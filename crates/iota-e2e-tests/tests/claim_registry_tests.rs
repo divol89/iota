@@ -8,7 +8,6 @@
 //! - Duplicate-claim rejection (`EAlreadyClaimed`, error code 1).
 //! - Address-mismatch rejection (`EAddressMismatch`, error code 0).
 
-use bcs;
 use fastcrypto::encoding::{Encoding, Hex};
 use iota_keys::keystore::AccountKeystore;
 use iota_macros::sim_test;
