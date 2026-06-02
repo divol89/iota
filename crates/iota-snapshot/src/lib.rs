@@ -32,18 +32,21 @@ use iota_core::{
     checkpoints::CheckpointStore,
     epoch::committee_store::CommitteeStore,
     global_state_hasher::GlobalStateHasher,
+    grpc_indexes::GrpcIndexesStore,
 };
 use iota_storage::{
     FileCompression, SHA3_BYTES, compute_sha3_checksum, object_store::util::path_to_filesystem,
 };
 use iota_types::{
     base_types::ObjectID,
+    digests::ChainIdentifier,
     global_state_hash::GlobalStateHash,
     iota_system_state::{
-        IotaSystemStateTrait, epoch_start_iota_system_state::EpochStartSystemStateTrait,
-        get_iota_system_state,
+        IotaSystemState, IotaSystemStateTrait,
+        epoch_start_iota_system_state::EpochStartSystemStateTrait, get_iota_system_state,
     },
     messages_checkpoint::ECMHLiveObjectSetDigest,
+    storage::EpochInfoV2,
 };
 use num_enum::{IntoPrimitive, TryFromPrimitive};
 use object_store::path::Path;
@@ -68,22 +71,17 @@ use tokio::time::Instant;
 /// MANIFEST file contains per file metadata of every file in the snapshot
 /// directory.
 ///
-/// Snapshot-format V2 additions over V1 (this "V2" refers to the on-disk
-/// snapshot format, not to `StoreObjectV2` or `EpochInfo::V*`, which are
-/// independent type-level version axes):
-/// - OBJECT file magic is `0x00B7EC76` (V1 was `0x00B7EC75`); a V2 reader fails
-///   fast on a V1 magic and vice versa. Encoded records are BCS-serialized
-///   `SnapshotLiveObject` carrying the per-object
-///   `previous_transaction_checkpoint` inline. The writer rejects rows whose
-///   checkpoint is `None` (lifted from pre-V2 store rows) at the publish
-///   boundary, so any record present in a published `.obj` file carries a
-///   concrete checkpoint sequence number.
+/// Snapshot-format V2 additions over V1 (this "V2" is the on-disk snapshot
+/// format, distinct from `StoreObjectV2` and `EpochInfo::V*`):
+/// - OBJECT file magic is `0x00B7EC76` (V1 was `0x00B7EC75`). Records are
+///   BCS-serialized `SnapshotLiveObject` carrying
+///   `previous_transaction_checkpoint` inline; the writer rejects `None`
+///   checkpoints at publish time, so every published record has a concrete one.
 /// - REFERENCE file format is unchanged from V1.
-/// - A per-snapshot `EPOCH_INFO` file is emitted alongside the bucket files,
-///   carrying one [`EpochInfoV1Entry`] per epoch in `[0, snapshot_epoch]` from
-///   `IndexStoreTables::epoch_info`. Writer-node operator contract:
-///   `enable_grpc_api = true`; the writer refuses to publish unless
-///   `Watermark::EpochIndexed >= snapshot_epoch`.
+/// - A per-snapshot `EPOCH_INFO` file carries one [`EpochInfoV1Entry`] per
+///   epoch in `[0, snapshot_epoch]`. The writer requires `enable_grpc_api =
+///   true` and refuses to publish unless `Watermark::EpochIndexed >=
+///   snapshot_epoch`.
 ///
 /// State Snapshot Directory Layout
 ///  - snapshot/
@@ -225,36 +223,63 @@ pub struct ManifestV1 {
     pub epoch: u64,
 }
 
+/// `ManifestV1` plus `chain_id`, letting a restore reject a foreign-chain
+/// snapshot.
+#[derive(Debug, Serialize, Deserialize, Eq, PartialEq)]
+pub struct ManifestV2 {
+    pub snapshot_version: u8,
+    pub address_length: u64,
+    pub file_metadata: Vec<FileMetadata>,
+    pub epoch: u64,
+    pub chain_id: ChainIdentifier,
+}
+
 #[derive(Debug, Serialize, Deserialize, Eq, PartialEq)]
 pub enum Manifest {
     V1(ManifestV1),
+    V2(ManifestV2),
 }
 
 impl Manifest {
     pub fn snapshot_version(&self) -> u8 {
         match self {
             Self::V1(manifest) => manifest.snapshot_version,
+            Self::V2(manifest) => manifest.snapshot_version,
         }
     }
     pub fn address_length(&self) -> u64 {
         match self {
             Self::V1(manifest) => manifest.address_length,
+            Self::V2(manifest) => manifest.address_length,
         }
     }
     pub fn file_metadata(&self) -> &Vec<FileMetadata> {
         match self {
             Self::V1(manifest) => &manifest.file_metadata,
+            Self::V2(manifest) => &manifest.file_metadata,
         }
     }
     pub fn epoch(&self) -> u64 {
         match self {
             Self::V1(manifest) => manifest.epoch,
+            Self::V2(manifest) => manifest.epoch,
+        }
+    }
+    /// Producing chain's identifier; `None` for V1.
+    pub fn chain_id(&self) -> Option<ChainIdentifier> {
+        match self {
+            Self::V1(_) => None,
+            Self::V2(manifest) => Some(manifest.chain_id),
         }
     }
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct EpochInfoV1Entry {
+    /// The epoch this entry describes; matches
+    /// `last_checkpoint_summary.epoch()`.
+    pub epoch: iota_types::committee::EpochId,
+
     /// First checkpoint of this epoch (`0` for genesis; otherwise the prior
     /// epoch's `last_checkpoint_summary.sequence_number + 1`).
     pub start_checkpoint: iota_types::messages_checkpoint::CheckpointSequenceNumber,
@@ -290,6 +315,96 @@ impl EpochInfo {
         match self {
             Self::V1(info) => &info.entries,
         }
+    }
+
+    /// Convert every on-disk entry into an [`EpochInfoV2`] index row, asserting
+    /// each entry's epoch matches its index. Canonical `EPOCH_INFO` ->
+    /// `epochs_v2` conversion.
+    pub fn into_epoch_info_v2_rows(self) -> anyhow::Result<Vec<EpochInfoV2>> {
+        let Self::V1(info) = self;
+        info.entries
+            .into_iter()
+            .enumerate()
+            .map(|(index, entry)| {
+                let row = EpochInfoV2::try_from(entry)?;
+                anyhow::ensure!(
+                    index as u64 == row.epoch,
+                    "EPOCH_INFO entry at index {index} declares epoch {}",
+                    row.epoch
+                );
+                Ok(row)
+            })
+            .collect()
+    }
+}
+
+/// Verify the snapshot's `chain_id` matches the caller's, then seed its
+/// `EPOCH_INFO` into the gRPC `epochs_v2` index. The check runs before any
+/// write, so a foreign-chain snapshot never touches the table. Shared seed
+/// path for the restore tool and the running-node backfill.
+pub fn verify_and_seed_epochs_v2(
+    grpc_indexes: &GrpcIndexesStore,
+    epoch_info: EpochInfo,
+    snapshot_chain_id: ChainIdentifier,
+    expected_chain_id: ChainIdentifier,
+) -> anyhow::Result<()> {
+    anyhow::ensure!(
+        snapshot_chain_id == expected_chain_id,
+        "snapshot chain_id {snapshot_chain_id} does not match this node's chain \
+         {expected_chain_id} (snapshot from the wrong network's bucket?)"
+    );
+
+    // Skip epochs at or below the `EpochIndexed` watermark (already complete);
+    // a fresh restore has no watermark and writes everything.
+    let highest_indexed = grpc_indexes
+        .highest_indexed_epoch()
+        .map_err(|e| anyhow::anyhow!("failed to read the epochs_v2 watermark: {e}"))?;
+    let rows: Vec<_> = epoch_info
+        .into_epoch_info_v2_rows()?
+        .into_iter()
+        .filter(|row| highest_indexed.is_none_or(|highest| row.epoch > highest))
+        .collect();
+
+    grpc_indexes
+        .insert_epoch_info(rows)
+        .map_err(|e| anyhow::anyhow!("failed to seed epochs_v2 from snapshot: {e}"))?;
+    Ok(())
+}
+
+impl TryFrom<EpochInfoV1Entry> for EpochInfoV2 {
+    type Error = anyhow::Error;
+
+    /// Reconstruct the in-memory [`EpochInfoV2`] index row from this on-disk
+    /// entry; errors if `epoch` disagrees with
+    /// `last_checkpoint_summary.epoch()`.
+    ///
+    /// `end_timestamp_ms` is not stored on disk; it is reconstructed from the
+    /// last checkpoint's timestamp, which equals the value the live
+    /// `index_epoch` path records (both derive from the same checkpoint).
+    fn try_from(entry: EpochInfoV1Entry) -> Result<Self> {
+        let system_state: IotaSystemState = bcs::from_bytes(&entry.start_system_state)
+            .map_err(|e| anyhow::anyhow!("decoding start_system_state: {e}"))?;
+        let summary_epoch = entry.last_checkpoint_summary.epoch();
+        anyhow::ensure!(
+            entry.epoch == summary_epoch,
+            "EPOCH_INFO entry declares epoch {} but its summary carries epoch {summary_epoch}",
+            entry.epoch,
+        );
+        let epoch = entry.epoch;
+        let end_checkpoint = *entry.last_checkpoint_summary.data().sequence_number();
+        let end_timestamp_ms = entry.last_checkpoint_summary.data().timestamp_ms;
+        Ok(EpochInfoV2 {
+            epoch,
+            protocol_version: system_state.protocol_version(),
+            start_timestamp_ms: system_state.epoch_start_timestamp_ms(),
+            end_timestamp_ms: Some(end_timestamp_ms),
+            start_checkpoint: entry.start_checkpoint,
+            end_checkpoint: Some(end_checkpoint),
+            reference_gas_price: system_state.reference_gas_price(),
+            system_state,
+            last_checkpoint_summary: Some(entry.last_checkpoint_summary),
+            end_of_epoch_tx_events: Some(entry.end_of_epoch_tx_events),
+        })
     }
 }
 

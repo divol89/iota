@@ -4,7 +4,7 @@
 
 use std::{num::NonZeroUsize, path::PathBuf, sync::Arc, time::Duration};
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use bytes::Bytes;
 use iota_config::object_storage_config::{ObjectStoreConfig, ObjectStoreType};
 use iota_core::{
@@ -20,7 +20,9 @@ use iota_storage::{
         find_missing_epochs_dirs, path_to_filesystem, put, run_manifest_update_loop,
     },
 };
-use iota_types::messages_checkpoint::CheckpointCommitment::ECMHLiveObjectSetDigest;
+use iota_types::{
+    digests::ChainIdentifier, messages_checkpoint::CheckpointCommitment::ECMHLiveObjectSetDigest,
+};
 use object_store::DynObjectStore;
 use prometheus::{
     IntCounter, IntGauge, Registry, register_int_counter_with_registry,
@@ -29,6 +31,10 @@ use prometheus::{
 use tracing::{debug, error, info};
 
 use crate::writer::StateSnapshotWriterV1;
+
+/// Default parallelism for uploading a snapshot's files to the remote store,
+/// used when `state_snapshot_write_config.concurrency` is unset (`0`).
+const DEFAULT_UPLOAD_CONCURRENCY: usize = 20;
 
 pub struct StateSnapshotUploaderMetrics {
     pub first_missing_state_snapshot_epoch: IntGauge,
@@ -76,6 +82,8 @@ pub struct StateSnapshotUploader {
     /// Time interval to check for presence of new db checkpoint (default: 60
     /// secs)
     interval: Duration,
+    /// Parallelism for uploading a snapshot's files to the remote store.
+    concurrency: NonZeroUsize,
     metrics: Arc<StateSnapshotUploaderMetrics>,
 }
 
@@ -84,6 +92,7 @@ impl StateSnapshotUploader {
         db_checkpoint_path: &std::path::Path,
         staging_path: &std::path::Path,
         snapshot_store_config: ObjectStoreConfig,
+        concurrency: usize,
         interval_s: u64,
         registry: &Registry,
         checkpoint_store: Arc<CheckpointStore>,
@@ -108,6 +117,10 @@ impl StateSnapshotUploader {
             staging_store: staging_store_config.make()?,
             snapshot_store: snapshot_store_config.make()?,
             interval: Duration::from_secs(interval_s),
+            // `0` (the `StateSnapshotConfig` default) falls back to the
+            // historical hardcoded parallelism.
+            concurrency: NonZeroUsize::new(concurrency)
+                .unwrap_or(NonZeroUsize::new(DEFAULT_UPLOAD_CONCURRENCY).unwrap()),
             metrics: StateSnapshotUploaderMetrics::new(registry),
         }))
     }
@@ -126,6 +139,14 @@ impl StateSnapshotUploader {
     /// Uploads state snapshots to remote store if they are missing.
     async fn upload_state_snapshot_to_object_store(&self, missing_epochs: Vec<u64>) -> Result<()> {
         let last_missing_epoch = missing_epochs.last().cloned().unwrap_or(0);
+        // Chain identifier = genesis checkpoint digest; tags each manifest.
+        let chain_id = ChainIdentifier::from(
+            *self
+                .checkpoint_store
+                .get_checkpoint_by_sequence_number(0)?
+                .context("genesis checkpoint missing from checkpoint store")?
+                .digest(),
+        );
         // Finds all local checkpoints db by epoch
         let local_checkpoints_by_epoch =
             find_all_dirs_with_epoch_prefix(&self.db_checkpoint_store, None).await?;
@@ -141,8 +162,9 @@ impl StateSnapshotUploader {
                     &self.staging_store,
                     &self.snapshot_store,
                     self.grpc_indexes.clone(),
+                    chain_id,
                     FileCompression::Zstd,
-                    NonZeroUsize::new(20).unwrap(),
+                    self.concurrency,
                 )
                 .await?;
                 let db = Arc::new(AuthorityPerpetualTables::open(
