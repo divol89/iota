@@ -613,13 +613,13 @@ impl EndOfEpochTransactionKind {
                     ));
                 }
             }
-            Self::ClaimRegistryCreate => {
-                if !config.enable_claim_registry() {
-                    return Err(UserInputError::Unsupported(
-                        "claim registry not enabled".to_string(),
-                    ));
-                }
-            }
+            // ClaimRegistryCreate is included in the EndOfEpoch transaction when
+            // transitioning *to* a version that enables the claim registry.
+            // The current-epoch config does not yet have enable_claim_registry=true,
+            // so checking it here would incorrectly reject the transition transaction.
+            // Correctness is enforced by create_claim_registry_tx which only produces
+            // this variant when the *next* epoch's config enables it.
+            Self::ClaimRegistryCreate => {}
         }
         Ok(())
     }
