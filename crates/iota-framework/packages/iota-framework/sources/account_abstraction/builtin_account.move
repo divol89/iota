@@ -43,11 +43,30 @@ const ETransactionSenderIsNotTheAccount: vector<u8> = b"Transaction must be sign
 
 // === Structs ===
 
+/// This struct represents an account.
+///
+/// It holds all the related data as dynamic fields to simplify updates, migrations and extensions.
+/// Arbitrary dynamic fields may be added and removed as necessary.
 public struct Account has key {
     id: UID,
 }
 
-// === Public Functions ===
+/// A builder struct used to safely construct an `Account`.
+///
+/// The builder is entirely temporary. It cannot be copied, stored or dropped.
+/// Its main usage is to add fields to the account being built, and then to finish the building
+/// process by calling `build()`.
+///
+/// Using the builder is the only way to populate dynamic fields at account creation time.
+/// Post-creation, dynamic fields can only be managed by the account itself (i.e. the
+/// transaction sender must be the account's address). The builder bypasses that restriction
+/// because the account object does not yet exist on-chain when the fields are added.
+public struct AccountBuilder {
+    account: Account,
+    authenticator: AuthenticatorFunctionRefV1<Account>,
+}
+
+// === Account Public Functions ===
 
 /// Creates a new mutable shared account backed by the built-in authenticator
 /// for `public_key`'s signature scheme.
@@ -112,6 +131,41 @@ public fun claim_immutable_account_v1(
     let authenticator = resolve_builtin_authenticator(public_key.scheme());
 
     account::create_immutable_account_v1(account, authenticator);
+}
+
+// === AccountBuilder Public Functions ===
+
+/// Construct an AccountBuilder and set the AuthenticatorFunctionRefV1.
+///
+/// The `AuthenticatorFunctionRefV1` will be attached to the account being built.
+public fun builder_v1(
+    authenticator: AuthenticatorFunctionRefV1<Account>,
+    ctx: &mut TxContext,
+): AccountBuilder {
+    AccountBuilder {
+        account: Account { id: object::new(ctx) },
+        authenticator,
+    }
+}
+
+/// Attach a `Value` as a dynamic field to the account being built.
+public fun with_field<Name: copy + drop + store, Value: store>(
+    mut self: AccountBuilder,
+    name: Name,
+    value: Value,
+): AccountBuilder {
+    dynamic_field::add(&mut self.account.id, name, value);
+    self
+}
+
+/// Finish building an `Account` instance.
+public fun build(self: AccountBuilder): address {
+    let AccountBuilder { account, authenticator } = self;
+    let account_address = account.account_address();
+
+    account::create_account_v1(account, authenticator);
+
+    account_address
 }
 
 // === View Functions ===
