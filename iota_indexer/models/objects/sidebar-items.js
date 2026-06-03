@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"enum":["BackwardHistoryObjectStatus"],"struct":["CoinBalance","ObjectRefColumn","StoredBackwardHistoryObject","StoredCheckpointedObject","StoredDeletedObject","StoredHistoryObject","StoredObject","StoredObjectSnapshot"]};
