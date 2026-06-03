@@ -1288,7 +1288,7 @@ mod checked {
             TransactionKind::EndOfEpochTransaction(txns) => {
                 let builder = ProgrammableTransactionBuilder::new();
                 let len = txns.len();
-
+                let mut create_claim_registry = false;
                 for (i, tx) in txns.into_iter().enumerate() {
                     match tx {
                         EndOfEpochTransactionKind::ChangeEpoch(change_epoch) => {
@@ -1341,6 +1341,7 @@ mod checked {
                             advance_epoch_v4(
                                 builder,
                                 change_epoch_v4,
+                                create_claim_registry,
                                 temporary_store,
                                 tx_ctx,
                                 move_vm,
@@ -1353,15 +1354,7 @@ mod checked {
                         }
                         EndOfEpochTransactionKind::ClaimRegistryCreate => {
                             assert!(protocol_config.enable_claim_registry());
-                            setup_claim_registry_create(
-                                temporary_store,
-                                tx_ctx.clone(),
-                                move_vm,
-                                gas_charger,
-                                protocol_config,
-                                metrics.clone(),
-                                trace_builder_opt,
-                            )?;
+                            create_claim_registry = true;
                         }
                     }
                 }
@@ -1801,6 +1794,7 @@ mod checked {
     fn advance_epoch_v4(
         builder: ProgrammableTransactionBuilder,
         change_epoch_v4: ChangeEpochV4,
+        create_claim_registry: bool,
         temporary_store: &mut TemporaryStore<'_>,
         tx_ctx: Rc<RefCell<TxContext>>,
         move_vm: &Arc<MoveVM>,
@@ -1826,6 +1820,9 @@ mod checked {
             adjust_rewards_by_score: change_epoch_v4.adjust_rewards_by_score,
         };
         let advance_epoch_pt = construct_advance_epoch_pt_v4(builder, &params)?;
+        // Clone before advance_epoch_impl consumes tx_ctx and metrics.
+        let tx_ctx_for_claim = tx_ctx.clone();
+        let metrics_for_claim = metrics.clone();
         advance_epoch_impl(
             advance_epoch_pt,
             params,
@@ -1837,7 +1834,19 @@ mod checked {
             protocol_config,
             metrics,
             trace_builder_opt,
-        )
+        )?;
+        if create_claim_registry {
+            setup_claim_registry_create(
+                temporary_store,
+                tx_ctx_for_claim,
+                move_vm,
+                gas_charger,
+                protocol_config,
+                metrics_for_claim,
+                trace_builder_opt,
+            )?;
+        }
+        Ok(())
     }
 
     fn process_system_packages(

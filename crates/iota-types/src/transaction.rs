@@ -375,8 +375,6 @@ pub enum EndOfEpochTransactionKind {
     ClaimRegistryCreate,
     // IMPORTANT: new enum variants should be added at the end to preserve serialization
     // compatibility. DO NOT CHANGE THE ORDER OF EXISTING ENTRIES!
-    // ClaimRegistryCreate can be left at the end as long as `enable_claim_registry` is not
-    // enabled in the protocol config.
 }
 
 impl EndOfEpochTransactionKind {
