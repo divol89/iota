@@ -1,13 +1,16 @@
 // Copyright (c) 2026 IOTA Stiftung
 // SPDX-License-Identifier: Apache-2.0
 
-/// Account type backed by IOTA's built-in signature-scheme authenticators
-/// (Ed25519, Secp256k1, Secp256r1, MultiSig, Passkey).
+/// Account type that ships with built-in support for IOTA's standard
+/// signature schemes (Ed25519, Secp256k1, Secp256r1, MultiSig, Passkey).
+/// Any `AuthenticatorFunctionRefV1` can also be used via `AccountBuilder`
+/// or by rotating the authenticator after creation.
 ///
-/// There are two creation paths:
+/// # Creation paths
 ///
 /// - **Fresh accounts** (`create_account_v1`, `create_immutable_account_v1`):
-///   allocate a new on-chain object ID and register it as an account.
+///   allocate a new on-chain object ID, derive the authenticator from the
+///   provided `PublicKey`.
 ///
 /// - **Claimed accounts** (`claim_account_v1`, `claim_immutable_account_v1`):
 ///   intended for addresses that already exist on-chain.
@@ -15,12 +18,20 @@
 ///   returns a deterministic UID for the new account object so the object ID
 ///   matches the sender's address.
 ///
-/// Both paths produce either a **mutable** shared-object account or an
-/// **immutable** account:
+/// Both paths require a `PublicKey`; the signature scheme is inferred from it
+/// automatically.
+///
+/// # Builder
+///
+/// Use `AccountBuilder` to populate dynamic fields before the account is created.
+/// This is the only way to add fields at creation time, since the admin
+/// functions require the transaction sender to already be the account address.
+///
+/// # Account kinds
 ///
 /// - **Mutable** accounts can have their authenticator rotated after creation
-///   via `account::rotate_auth_function_ref_v1`, and support adding, removing,
-///   and mutating dynamic fields via the admin functions in this module.
+///   and support adding, removing, and mutating dynamic fields via the admin
+///   functions in this module.
 /// - **Immutable** accounts are frozen at creation; neither the authenticator
 ///   nor any dynamic fields can ever be changed.
 module iota::builtin_account;
@@ -55,7 +66,7 @@ public struct Account has key {
 ///
 /// The builder is entirely temporary. It cannot be copied, stored or dropped.
 /// Its main usage is to add fields to the account being built, and then to finish the building
-/// process by calling `build()`.
+/// process by calling a build function.
 ///
 /// Using the builder is the only way to populate dynamic fields at account creation time.
 /// Post-creation, dynamic fields can only be managed by the account itself (i.e. the
@@ -76,7 +87,7 @@ public struct AccountBuilder {
 ///
 /// Emits a `MutableAccountCreated` event on success.
 public fun create_account_v1(public_key: PublicKey, ctx: &mut TxContext) {
-    let account = make_fresh_account(public_key, ctx);
+    let account = make_account_with_public_key(public_key, ctx);
     let authenticator = resolve_builtin_authenticator(public_key.scheme());
 
     account::create_account_v1(account, authenticator);
@@ -90,7 +101,7 @@ public fun create_account_v1(public_key: PublicKey, ctx: &mut TxContext) {
 ///
 /// Emits an `ImmutableAccountCreated` event on success.
 public fun create_immutable_account_v1(public_key: PublicKey, ctx: &mut TxContext) {
-    let account = make_fresh_account(public_key, ctx);
+    let account = make_account_with_public_key(public_key, ctx);
     let authenticator = resolve_builtin_authenticator(public_key.scheme());
 
     account::create_immutable_account_v1(account, authenticator);
@@ -100,8 +111,7 @@ public fun create_immutable_account_v1(public_key: PublicKey, ctx: &mut TxContex
 /// the built-in authenticator for `public_key`'s signature scheme.
 ///
 /// `registry` records the sender's address to prevent double-claiming and
-/// returns a deterministic UID so the new account object's ID matches the
-/// sender's address.
+/// ensures the new account object's ID matches the sender's address.
 ///
 /// Aborts if the address has already been claimed.
 ///
@@ -159,11 +169,21 @@ public fun with_field<Name: copy + drop + store, Value: store>(
 }
 
 /// Finish building an `Account` instance.
-public fun build(self: AccountBuilder): address {
+public fun build_v1(self: AccountBuilder): address {
     let AccountBuilder { account, authenticator } = self;
     let account_address = account.account_address();
 
     account::create_account_v1(account, authenticator);
+
+    account_address
+}
+
+/// Finish building an immutable `Account` instance.
+public fun build_immutable_v1(self: AccountBuilder): address {
+    let AccountBuilder { account, authenticator } = self;
+    let account_address = account.account_address();
+
+    account::create_immutable_account_v1(account, authenticator);
 
     account_address
 }
@@ -180,10 +200,12 @@ public fun has_field<Name: copy + drop + store>(self: &Account, name: Name): boo
     dynamic_field::exists_(&self.id, name)
 }
 
+/// Returns `true` if and only if `self` has a public key attached.
+public fun has_public_key(self: &Account): bool {
+    builtin_authenticator_functions::has_public_key(&self.id)
+}
+
 /// Borrows a reference to a dynamic field from the account.
-///
-/// This function is not gated to be called only by the account,
-/// anybody can call it to read the account dynamic fields.
 public fun borrow_field<Name: copy + drop + store, Value: store>(
     self: &Account,
     name: Name,
@@ -191,10 +213,12 @@ public fun borrow_field<Name: copy + drop + store, Value: store>(
     dynamic_field::borrow(&self.id, name)
 }
 
+/// Borrows the public key attached to the account.
+public fun borrow_public_key(self: &Account): &PublicKey {
+    builtin_authenticator_functions::borrow_public_key(&self.id)
+}
+
 /// Borrows a reference to the attached `AuthenticatorFunctionRefV1` instance.
-///
-/// This function is not gated to be called only by the account,
-/// anybody can call it to read the attached authenticator.
 public fun borrow_auth_function_ref_v1(self: &Account): &AuthenticatorFunctionRefV1<Account> {
     account::borrow_auth_function_ref_v1(&self.id)
 }
@@ -215,6 +239,17 @@ public fun add_field<Name: copy + drop + store, Value: store>(
     dynamic_field::add(&mut self.id, name, value);
 }
 
+/// Attaches `public_key` to the account.
+///
+/// Use this when migrating away from a custom authenticator to a built-in one.
+///
+/// Only the account itself can call this function.
+public fun attach_public_key(self: &mut Account, public_key: PublicKey, ctx: &TxContext) {
+    ensure_tx_sender_is_account(self, ctx);
+
+    builtin_authenticator_functions::attach_public_key(&mut self.id, public_key);
+}
+
 /// Removes a dynamic field from the account.
 ///
 /// Only the account itself can call this function.
@@ -226,6 +261,17 @@ public fun remove_field<Name: copy + drop + store, Value: store>(
     ensure_tx_sender_is_account(self, ctx);
 
     dynamic_field::remove(&mut self.id, name)
+}
+
+/// Detaches and returns the public key attached to the account.
+///
+/// Use this when migrating away from a built-in authenticator to a custom one.
+///
+/// Only the account itself can call this function.
+public fun detach_public_key(self: &mut Account, ctx: &TxContext): PublicKey {
+    ensure_tx_sender_is_account(self, ctx);
+
+    builtin_authenticator_functions::detach_public_key(&mut self.id)
 }
 
 /// Borrows a mutable reference to a dynamic field from the account.
@@ -258,12 +304,38 @@ public fun rotate_field<Name: copy + drop + store, Value: store>(
     previous_value
 }
 
+/// Replaces the existing public key with `public_key` and returns the previous key.
+///
+/// Only the account itself can call this function.
+public fun rotate_public_key(
+    self: &mut Account,
+    public_key: PublicKey,
+    ctx: &TxContext,
+): PublicKey {
+    ensure_tx_sender_is_account(self, ctx);
+
+    builtin_authenticator_functions::rotate_public_key(&mut self.id, public_key)
+}
+
+/// Rotate the attached authenticator.
+///
+/// Only the account itself or the admin can call this function.
+public fun rotate_auth_function_ref_v1(
+    self: &mut Account,
+    authenticator: AuthenticatorFunctionRefV1<Account>,
+    ctx: &TxContext,
+): AuthenticatorFunctionRefV1<Account> {
+    ensure_tx_sender_is_account(self, ctx);
+
+    account::rotate_auth_function_ref_v1(self, authenticator)
+}
+
 // === Package Functions ===
 
 // === Private Functions ===
 
 /// Allocates a new `Account` object and attaches `public_key` to it.
-fun make_fresh_account(public_key: PublicKey, ctx: &mut TxContext): Account {
+fun make_account_with_public_key(public_key: PublicKey, ctx: &mut TxContext): Account {
     let mut account = Account { id: object::new(ctx) };
     builtin_authenticator_functions::attach_public_key(&mut account.id, public_key);
     account
