@@ -170,7 +170,7 @@ pub async fn multi_get_data(
 }
 
 #[derive(Deserialize, Debug)]
-pub(crate) struct PaginationQuery {
+pub(crate) struct TransactionDigestsByAddressQuery {
     pub(crate) cursor: Option<TransactionSequenceNumber>,
     pub(crate) limit: Option<NonZeroUsize>,
     #[serde(default)]
@@ -208,7 +208,7 @@ pub(crate) struct PaginationQuery {
 pub async fn transaction_digests_by_address(
     State(app_state): State<SharedRestServerAppState>,
     Path(address): Path<String>,
-    Query(query): Query<PaginationQuery>,
+    Query(query): Query<TransactionDigestsByAddressQuery>,
 ) -> Result<impl IntoResponse, ApiError> {
     let address = base64_url::decode(&address)
         .map_err(|_| ApiError::BadRequest("address is not valid base64-url".into()))?;
@@ -216,7 +216,7 @@ pub async fn transaction_digests_by_address(
     let address = IotaAddress::from_bytes(&address)
         .map_err(|_| ApiError::BadRequest("invalid address".into()))?;
 
-    let PaginationQuery {
+    let TransactionDigestsByAddressQuery {
         cursor,
         limit,
         oldest_first,
