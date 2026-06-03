@@ -1353,7 +1353,6 @@ mod checked {
                             return Ok(Mode::empty_results());
                         }
                         EndOfEpochTransactionKind::ClaimRegistryCreate => {
-                            assert!(protocol_config.enable_claim_registry());
                             create_claim_registry = true;
                         }
                     }
