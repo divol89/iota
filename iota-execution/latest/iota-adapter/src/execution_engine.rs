@@ -1289,7 +1289,7 @@ mod checked {
                 let builder = ProgrammableTransactionBuilder::new();
                 let len = txns.len();
 
-                if let Some((i, tx)) = txns.into_iter().enumerate().next() {
+                for (i, tx) in txns.into_iter().enumerate() {
                     match tx {
                         EndOfEpochTransactionKind::ChangeEpoch(change_epoch) => {
                             assert_eq!(i, len - 1);
@@ -1353,7 +1353,15 @@ mod checked {
                         }
                         EndOfEpochTransactionKind::ClaimRegistryCreate => {
                             assert!(protocol_config.enable_claim_registry());
-                            setup_claim_registry_create(builder)?;
+                            setup_claim_registry_create(
+                                temporary_store,
+                                tx_ctx.clone(),
+                                move_vm,
+                                gas_charger,
+                                protocol_config,
+                                metrics.clone(),
+                                trace_builder_opt,
+                            )?;
                         }
                     }
                 }
@@ -1946,18 +1954,37 @@ mod checked {
     /// `ClaimRegistry` singleton during an epoch-change transaction for
     /// networks that were deployed before the ClaimRegistry was introduced.
     fn setup_claim_registry_create(
-        mut builder: ProgrammableTransactionBuilder,
-    ) -> Result<ProgrammableTransaction, ExecutionError> {
-        builder
-            .move_call(
-                IOTA_FRAMEWORK_PACKAGE_ID,
-                CLAIM_REGISTRY_MODULE_NAME.to_owned(),
-                CLAIM_REGISTRY_CREATE_FUNCTION_NAME.to_owned(),
-                vec![],
-                vec![],
-            )
-            .expect("Unable to generate claim_registry_create transaction!");
-        Ok(builder.finish())
+        temporary_store: &mut TemporaryStore<'_>,
+        tx_ctx: Rc<RefCell<TxContext>>,
+        move_vm: &Arc<MoveVM>,
+        gas_charger: &mut GasCharger,
+        protocol_config: &ProtocolConfig,
+        metrics: Arc<LimitsMetrics>,
+        trace_builder_opt: &mut Option<MoveTraceBuilder>,
+    ) -> Result<(), ExecutionError> {
+        let pt = {
+            let mut builder = ProgrammableTransactionBuilder::new();
+            builder
+                .move_call(
+                    IOTA_FRAMEWORK_PACKAGE_ID,
+                    CLAIM_REGISTRY_MODULE_NAME.to_owned(),
+                    CLAIM_REGISTRY_CREATE_FUNCTION_NAME.to_owned(),
+                    vec![],
+                    vec![],
+                )
+                .expect("Unable to generate claim_registry_create transaction!");
+            builder.finish()
+        };
+        programmable_transactions::execution::execute::<execution_mode::System>(
+            protocol_config,
+            metrics,
+            move_vm,
+            temporary_store,
+            tx_ctx,
+            gas_charger,
+            pt,
+            trace_builder_opt,
+        )
     }
 
     /// The function constructs a transaction that invokes
