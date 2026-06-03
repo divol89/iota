@@ -5009,9 +5009,12 @@ impl AuthorityState {
     fn create_claim_registry_tx(
         &self,
         epoch_store: &Arc<AuthorityPerEpochStore>,
+        next_epoch_protocol_version: ProtocolVersion,
     ) -> Option<EndOfEpochTransactionKind> {
-        if !epoch_store.protocol_config().enable_claim_registry() {
-            info!("ClaimRegistry is not enabled");
+        let chain = self.get_chain_identifier().chain();
+        let next_config = ProtocolConfig::get_for_version(next_epoch_protocol_version, chain);
+        if !next_config.enable_claim_registry() {
+            info!("ClaimRegistry is not enabled for next protocol version");
             return None;
         }
         if epoch_store.claim_registry_exists() {
@@ -5049,10 +5052,6 @@ impl AuthorityState {
     )> {
         let mut txns = Vec::new();
 
-        if let Some(tx) = self.create_claim_registry_tx(epoch_store) {
-            txns.push(tx);
-        }
-
         let next_epoch = epoch_store.epoch() + 1;
 
         let buffer_stake_bps = epoch_store.get_effective_buffer_stake_bps();
@@ -5069,6 +5068,10 @@ impl AuthorityState {
                 authority_capabilities.clone(),
                 buffer_stake_bps,
             );
+
+        if let Some(tx) = self.create_claim_registry_tx(epoch_store, next_epoch_protocol_version) {
+            txns.push(tx);
+        }
 
         // since system packages are created during the current epoch, they should abide
         // by the rules of the current epoch, including the current epoch's max
