@@ -138,7 +138,7 @@ impl KvStoreClient {
 
         // Use the first key to determine the type - all keys should be of the same type
         match keys.first().expect("emptiness was checked earlier") {
-            Key::AddressToTransactionDigests(_address) => {
+            Key::TransactionDigestsByAddress(_address) => {
                 return Err(ApiError::BadRequest("unsupported key".into()));
             }
             Key::Transaction(_) => {

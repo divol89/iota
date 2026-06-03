@@ -11,6 +11,7 @@ use axum::{
     response::IntoResponse,
     routing::{get, post},
 };
+use iota_storage::http_key_value_store::ItemType;
 use tokio_util::sync::CancellationToken;
 
 use crate::{
@@ -49,7 +50,7 @@ impl Server {
             // static and dynamic route segments are allowed to overlap. If they do, static segments
             // will be given higher priority.
             .route(
-                "/addr2tx/{address}",
+                &format!("/{}/{{address}}", ItemType::TransactionDigestsByAddress),
                 get(kv_store::transaction_digests_by_address),
             )
             .with_state(shared_state)

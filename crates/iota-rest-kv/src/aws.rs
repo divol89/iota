@@ -319,7 +319,7 @@ impl KvStoreClient {
         let item_type = key.item_type().to_string();
 
         match key {
-            Key::AddressToTransactionDigests(_address) => {
+            Key::TransactionDigestsByAddress(_address) => {
                 bail!("unsupported key");
             }
             Key::Transaction(transaction_digest) => {
